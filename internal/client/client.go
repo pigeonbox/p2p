@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +63,9 @@ type Client struct {
 	id  *nodeIdentity
 	log *slog.Logger
 	reg *registryAPI
+
+	relayMu    sync.Mutex
+	relayCache string // 中继地址发现结果(一次发现,整场复用)
 }
 
 // New 构造客户端（加载/生成节点身份密钥）。
@@ -113,13 +118,48 @@ func (c *Client) relayAddr() string {
 	if c.opt.RelayAddr != "" {
 		return c.opt.RelayAddr
 	}
-	// registry 常带端口(http://host:22346),默认中继=同主机换 12347 端口
+	c.relayMu.Lock()
+	defer c.relayMu.Unlock()
+	if c.relayCache != "" {
+		return c.relayCache
+	}
+	// registry 常带端口(http://host:22346),取主机后换中继端口
 	// ——直接拼接会得到 host:22346:12347(215 部署实测踩坑)。
 	host := hostOf(c.opt.Registry)
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	return host + ":12347"
+	// 中继端口经注册中心 /health 的 relay_port 自发现(服务器自报,端口拓扑任意);
+	// 老服务器无该字段 → 回退历史默认 12347。
+	port := 12347
+	if p := c.discoverRelayPort(); p > 0 {
+		port = p
+	}
+	c.relayCache = net.JoinHostPort(host, strconv.Itoa(port))
+	return c.relayCache
+}
+
+// discoverRelayPort GET {registry}/health 读 relay_port;失败返回 0(调用方回退默认)。
+func (c *Client) discoverRelayPort() int {
+	u := strings.TrimRight(c.opt.Registry, "/") + "/health"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	var out struct {
+		RelayPort int `json:"relay_port"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0
+	}
+	return out.RelayPort
 }
 
 // setupNode 注册节点租约；返回 best-effort 注销函数。

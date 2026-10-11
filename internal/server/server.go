@@ -148,7 +148,13 @@ func (s *Server) route(mux *http.ServeMux, pattern, name string, l *ratelimit.Ke
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": s.version})
+	// relay_port 自报中继端口:客户端据此发现中继(不再依赖写死的 12347),
+	// 老服务器缺该字段时客户端回退历史默认 registry host:12347。
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     "ok",
+		"version":    s.version,
+		"relay_port": s.cfg.Relay.Port,
+	})
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {

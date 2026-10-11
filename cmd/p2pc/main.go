@@ -73,7 +73,7 @@ func commonFlags(fs *flagSet) *client.Options {
 	opt := &client.Options{Registry: "http://127.0.0.1:12346"}
 	fs.StringVar(&opt.Registry, "registry", opt.Registry, "p2pd 基址(裸域名触发 DNS SRV 发现)")
 	fs.StringVar(&opt.RegistriesJoined, "registries", "", "额外注册中心(逗号分隔,多源 failover;亦可用 PB_P2P_REGISTRIES)")
-	fs.StringVar(&opt.RelayAddr, "relay", "", "中继地址(缺省 registry host:12347)")
+	fs.StringVar(&opt.RelayAddr, "relay", "", "中继地址(缺省经注册中心 /health 的 relay_port 自动发现;老服务器回退 registry host:12347)")
 	fs.StringVar(&opt.NodeKeyPath, "key", client.DefaultNodeKeyPath(), "节点身份密钥路径")
 	fs.BoolVar(&opt.DisablePunch, "no-punch", false, "跳过打洞直接走中继")
 	fs.BoolVar(&opt.Quiet, "quiet", false, "静默模式")

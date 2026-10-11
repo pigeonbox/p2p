@@ -411,3 +411,22 @@ func TestResolvePerHashRateLimit(t *testing.T) {
 	}
 	t.Fatalf("per-hash 限流未生效,最后状态 %d", last)
 }
+
+func TestHealthReportsRelayPort(t *testing.T) {
+	base, _ := newTestServer(t, func(c *config.Config) { c.Relay.Port = 56787 })
+	resp, err := http.Get(base.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Status    string `json:"status"`
+		RelayPort int    `json:"relay_port"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "ok" || out.RelayPort != 56787 {
+		t.Fatalf("health = %+v, want status=ok relay_port=56787", out)
+	}
+}
