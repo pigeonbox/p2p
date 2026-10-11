@@ -58,6 +58,12 @@ func mapUDPPort(sock *net.UDPConn) (ext *net.UDPAddr, release func(), ok bool) {
 	return nil, release, false
 }
 
+// usableExt 映射结果可用性:须为具体 IP 且端口非 0。
+// 部分网关会 ACK 出 0.0.0.0:0 之类的空映射(真机实测),当成功会把垃圾候选喂给打洞。
+func usableExt(ext *net.UDPAddr) bool {
+	return ext != nil && ext.Port > 0 && ext.IP != nil && !ext.IP.IsUnspecified()
+}
+
 // ---- 网关发现 ----
 
 // gatewayAndLocalIP 探测默认网关与本机内网 IPv4。Linux 解析 /proc/net/route;

@@ -246,9 +246,14 @@ func (c *Client) punchSockets() (sock4, sock6 *net.UDPConn, mapped string, relea
 		sock6 = nil // 无 v6 环境:纯 v4
 	}
 	if ext, rel, ok := mapUDPPort(sock4); ok {
-		mapped = ext.String()
-		c.log.Info("端口映射成功", "external", mapped)
-		release = rel
+		if usableExt(ext) {
+			mapped = ext.String()
+			c.log.Info("端口映射成功", "external", mapped)
+			release = rel
+		} else {
+			rel() // 空映射(如 0.0.0.0:0)归还租约,按无映射走打洞/中继
+			c.log.Info("端口映射外部地址不可用,忽略", "external", ext.String())
+		}
 	}
 	return sock4, sock6, mapped, release
 }

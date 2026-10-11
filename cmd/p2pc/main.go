@@ -104,11 +104,18 @@ func send(args []string) {
 	if err != nil {
 		fail(err)
 	}
-	used, err := c.Send(paths, strings.ToUpper(code))
-	if err != nil {
+	// 口令先亮后等:Send 内部自动口令只在其返回后才可读,等待期接收方无从得知
+	code = strings.ToUpper(code)
+	if code == "" {
+		if code, err = client.GenerateCode(); err != nil {
+			fail(err)
+		}
+	}
+	fmt.Printf("口令: %s\n接收方执行: p2pc recv %s\n等待对端接入...\n", code, code)
+	if _, err := c.Send(paths, code); err != nil {
 		fail(err)
 	}
-	fmt.Printf("\n✓ 发送完成\n口令: %s\n", used)
+	fmt.Println("\n✓ 发送完成")
 }
 
 func receive(args []string) {

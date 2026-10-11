@@ -319,7 +319,7 @@ func (ci *candInfo) pickUDP(family string) *net.UDPAddr {
 		if c == "" {
 			continue
 		}
-		if a, err := net.ResolveUDPAddr("udp", c); err == nil {
+		if a, err := net.ResolveUDPAddr("udp", c); err == nil && usableExt(a) {
 			return a
 		}
 	}
