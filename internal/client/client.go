@@ -34,6 +34,8 @@ type Options struct {
 	RelayAddr string
 	// DisablePunch 跳过打洞直接走中继（测试与强制兜底用）
 	DisablePunch bool
+	// NoRelay 仅直连:跳过中继兜底,打洞失败即报错(强制直连/诊断用)
+	NoRelay bool
 	// PunchBudget 打洞预算（默认 4s）
 	PunchBudget time.Duration
 	// Quiet 关闭过程日志
@@ -344,17 +346,23 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 		c.log.Warn("快打洞成功但直连建立失败,落中继+后台升级", "err", derr)
 	}
 
-	// 中继可达性探测(2s):不可用则长打洞兜底(旧行为)
+	// 中继可达性探测(2s):不可用则长打洞兜底(旧行为);仅直连模式(-no-relay)跳过探测
 	relayOK := false
-	if conn, derr := net.DialTimeout("tcp", c.relayAddr(), 2*time.Second); derr == nil {
-		_ = conn.Close()
-		relayOK = true
+	if !c.opt.NoRelay {
+		if conn, derr := net.DialTimeout("tcp", c.relayAddr(), 2*time.Second); derr == nil {
+			_ = conn.Close()
+			relayOK = true
+		}
 	}
 	if !relayOK {
-		c.log.Info("中继不可用,长打洞兜底", "budget", c.opt.PunchBudget.String())
+		fallReason := "中继不可用"
+		if c.opt.NoRelay {
+			fallReason = "仅直连模式"
+		}
+		c.log.Info(fallReason+",长打洞兜底", "budget", c.opt.PunchBudget.String())
 		tgt2, err2 := punchDual(sock4, sock6, peer, k, c.opt.PunchBudget, mapped)
 		if err2 != nil {
-			return nil, "", fmt.Errorf("打洞失败且中继不可用: %w", err2)
+			return nil, "", fmt.Errorf("打洞失败且%s: %w", fallReason, err2)
 		}
 		var x *xport
 		var derr error

@@ -76,6 +76,7 @@ func commonFlags(fs *flagSet) *client.Options {
 	fs.StringVar(&opt.RelayAddr, "relay", "", "中继地址(缺省经注册中心 /health 的 relay_port 自动发现;老服务器回退 registry host:12347)")
 	fs.StringVar(&opt.NodeKeyPath, "key", client.DefaultNodeKeyPath(), "节点身份密钥路径")
 	fs.BoolVar(&opt.DisablePunch, "no-punch", false, "跳过打洞直接走中继")
+	fs.BoolVar(&opt.NoRelay, "no-relay", false, "仅直连:跳过中继兜底,打洞失败即报错")
 	fs.BoolVar(&opt.Quiet, "quiet", false, "静默模式")
 	return opt
 }
