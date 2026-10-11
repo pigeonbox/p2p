@@ -418,7 +418,7 @@ func TestHealthReportsRelayPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out struct {
 		Status    string `json:"status"`
 		RelayPort int    `json:"relay_port"`

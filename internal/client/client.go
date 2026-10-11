@@ -152,7 +152,7 @@ func (c *Client) discoverRelayPort() int {
 	if err != nil {
 		return 0
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out struct {
 		RelayPort int `json:"relay_port"`
 	}
