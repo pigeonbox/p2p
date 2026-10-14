@@ -8,6 +8,7 @@
 package client
 
 import (
+	"strings"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -94,6 +95,18 @@ func SendInvite(opt Options, code, toNode, fromName, note string) error {
 	if opt.Registry == "" {
 		return fmt.Errorf("registry 地址必填")
 	}
+	// toNode 形态闸(纵深:调用方 p2px 已校验;CLI 直调路径在此兜底,
+	// 防任意串进目录查找与信箱投递端点)
+	if len(toNode) != 64 {
+		return fmt.Errorf("目标 node_id 须为 64 字符 hex")
+	}
+	for i := 0; i < len(toNode); i++ {
+		c := toNode[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return fmt.Errorf("目标 node_id 须为 64 字符 hex")
+		}
+	}
+	toNode = strings.ToLower(toNode)
 	if opt.NodeKeyPath == "" {
 		opt.NodeKeyPath = DefaultNodeKeyPath()
 	}

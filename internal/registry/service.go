@@ -577,5 +577,31 @@ func sanitizeMeta(name, version string, caps []string) (string, string, []string
 	if caps == nil {
 		caps = []string{}
 	}
+	// 显示字段入口消毒(2026-10-15 渗透):name 进公开名录,剥控制字符——
+	// 防止控制符污染终端/日志消费面(UI 经 Vue 插值本就安全,此为纵深)。
+	// 只影响存储值;签名负载用请求原文(payload 构造在此之后),验签不受影响。
+	name = stripControl(name)
+	version = stripControl(version)
 	return name, version, caps, nil
+}
+
+// stripControl 剥控制字符(<0x20 与 0x7f)。
+func stripControl(s string) string {
+	has := false
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			has = true
+			break
+		}
+	}
+	if !has {
+		return s
+	}
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x20 && s[i] != 0x7f {
+			b = append(b, s[i])
+		}
+	}
+	return string(b)
 }
