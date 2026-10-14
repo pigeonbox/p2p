@@ -507,7 +507,16 @@ func (c *Client) Send(paths []string, code string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer dereg()
+	// 失败路径保留公告（2026-10-14 GB 级自动续传设计）：公告按 15min TTL 自消，
+	// 失败即注销会与 supervisor 重派的新尝试公告竞态——旧进程的 deferred
+	// 注销把新公告级联删掉，接收方 resolve 永远 miss（冻结复现实锤）。
+	// 成功路径注销语义不变（文件已送达，公告立即失效是正确行为）。
+	sendOK := false
+	defer func() {
+		if sendOK {
+			dereg()
+		}
+	}()
 
 	ch, err := joinChannel(c.opt.Registry, code, c.id, 10*time.Minute)
 	if err != nil {
@@ -557,6 +566,7 @@ func (c *Client) Send(paths []string, code string) (string, error) {
 		return code, err
 	}
 	c.log.Info("发送完成", "code", code, "files", n)
+	sendOK = true
 	return code, nil
 }
 
