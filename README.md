@@ -60,7 +60,7 @@ PB_P2P_CODE=XXXX-XXXX-XXXX p2pc recv - --registry http://p2p.example.com:12346
 
 ### 网页模式（p2pc-web）
 
-面向无 webkit2gtk-4.1 的老底座桌面（统信 UOS V20 全系 / 银河麒麟 V10 SP1 等）的浏览器版客户端：单个纯静态二进制，本机起回环 HTTP 服务，浏览器即界面——文件柜快捷入口 + 设备直传收发（内置 p2p，与 p2pc 同协议，双端须同为协议 v2）。
+面向无 webkit2gtk-4.1 的老底座桌面（统信 UOS V20 全系 / 银河麒麟 V10 SP1 等）的浏览器版客户端：单个纯静态二进制，本机起回环 HTTP 服务，浏览器即界面——文件柜快捷入口 + 设备直传收发（内置 p2p，与 p2pc 同协议，破坏性变更双端须同版——当前为协议 v4）。
 
 ```bash
 ./p2pc-web-x86_64-unknown-linux-gnu                       # 默认 127.0.0.1:12348,自动开浏览器
