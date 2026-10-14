@@ -8,6 +8,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -55,8 +56,8 @@ func usage() {
 
 用法:
   p2pc send <文件|目录>... [--registry URL] [--code 口令] [--relay HOST:PORT]
-                  [--key PATH] [--no-punch] [--quiet]
-  p2pc recv <口令> [--registry URL] [--out DIR] [--yes]
+                  [--key PATH] [--no-punch] [--quiet] [--json]
+  p2pc recv <口令> [--registry URL] [--out DIR] [--yes] [--json]
                   [--relay HOST:PORT] [--key PATH] [--no-punch] [--quiet]
                   （口令传 "-" 时从 PB_P2P_CODE 环境变量读取——argv 不留码,
                     服务进程调用方(server supervisor)的硬化通道）
@@ -67,6 +68,7 @@ func usage() {
   传输优先 UDP 打洞直连,失败自动回落中继(先通后优:中继上起传,后台打洞
   成功后文件边界自动升级直连;中继需服务端 relay.enabled=true,现默认开)
   目录会整棵递归;接收方可逐文件授权(--yes 跳过交互全部接受)
+  --json       NDJSON 事件流(code/done/error),供程序调用方解析;缺省纯文本
 `)
 	os.Exit(2)
 }
@@ -88,9 +90,11 @@ func send(args []string) {
 	opt := commonFlags(fs)
 	var code string
 	fs.StringVar(&code, "code", "", "指定口令(缺省自动生成)")
+	jsonFlag := fs.Bool("json", false, "NDJSON 事件流输出(机器可读:code/done/error)")
 	if err := parseArgs(fs.FlagSet, args); err != nil {
 		os.Exit(2)
 	}
+	jsonOut = *jsonFlag
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "✗ 缺少文件/目录参数")
 		os.Exit(2)
@@ -105,20 +109,28 @@ func send(args []string) {
 
 	c, err := client.New(*opt)
 	if err != nil {
-		fail(err)
+		failJSON(err)
 	}
 	// 口令先亮后等:Send 内部自动口令只在其返回后才可读,等待期接收方无从得知
 	code = strings.ToUpper(code)
 	if code == "" {
 		if code, err = client.GenerateCode(); err != nil {
-			fail(err)
+			failJSON(err)
 		}
 	}
-	printCode(code)
-	if _, err := c.Send(paths, code); err != nil {
-		fail(err)
+	if jsonOut {
+		emitEvent("code", map[string]any{"code": code})
+	} else {
+		printCode(code)
 	}
-	fmt.Println("\n✓ 发送完成")
+	if _, err := c.Send(paths, code); err != nil {
+		failJSON(err)
+	}
+	if jsonOut {
+		emitEvent("done", map[string]any{"kind": "send"})
+	} else {
+		fmt.Println("\n✓ 发送完成")
+	}
 }
 
 // printCode 口令行格式契约：server supervisor（p2px.scanLines）与 desktop
@@ -126,6 +138,34 @@ func send(args []string) {
 // 变更必须同步下游解析器并 bump 说明（main_test.go 锁定）。
 func printCode(code string) {
 	fmt.Printf("口令: %s\n接收方执行: p2pc recv %s\n等待对端接入...\n", code, code)
+}
+
+// ---- --json NDJSON 事件流(2026-10-14 留位增量,spec §14) ----
+// stdout 单流:{"event":"code"|"done"|"error", ...};缺省纯文本不变
+// (desktop sidecar 解析纯文本零影响)。--json 下强制非交互(recv 自动 --yes)。
+
+var jsonOut bool
+
+// emitEvent JSON 模式发一行 NDJSON 事件(非 JSON 模式静默)。
+func emitEvent(kind string, fields map[string]any) {
+	if !jsonOut {
+		return
+	}
+	m := map[string]any{"event": kind}
+	for k, v := range fields {
+		m[k] = v
+	}
+	b, _ := json.Marshal(m)
+	fmt.Println(string(b))
+}
+
+// failJSON 错误路径(JSON 模式发 error 事件后按 fail 语义退出)。
+func failJSON(err error) {
+	if jsonOut {
+		emitEvent("error", map[string]any{"msg": err.Error()})
+		os.Exit(1)
+	}
+	fail(err)
 }
 
 // resolveRecvCode 口令来源：位置参数直传；"-" = 从 PB_P2P_CODE env 读
@@ -147,8 +187,13 @@ func receive(args []string) {
 	out, _ := os.Getwd()
 	fs.StringVar(&out, "out", out, "接收目录")
 	yes := fs.Bool("yes", false, "全部接受(跳过逐文件交互授权)")
+	jsonFlag := fs.Bool("json", false, "NDJSON 事件流输出(机器可读:done/error;强制非交互)")
 	if err := parseArgs(fs.FlagSet, args); err != nil {
 		os.Exit(2)
+	}
+	jsonOut = *jsonFlag
+	if jsonOut {
+		*yes = true // JSON 流不可被交互提示污染
 	}
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "✗ 缺少口令参数")
@@ -172,7 +217,23 @@ func receive(args []string) {
 		if len(files) > 0 {
 			fmt.Fprintf(os.Stderr, "✗ 部分失败(已收 %d 个): %v\n", len(files), err)
 		}
+		if jsonOut {
+			emitEvent("error", map[string]any{"msg": err.Error(), "files": len(files)})
+			os.Exit(1)
+		}
 		fail(err)
+	}
+	if jsonOut {
+		abs := make([]string, 0, len(files))
+		for _, f := range files {
+			if a, aerr := filepath.Abs(f); aerr == nil {
+				abs = append(abs, a)
+			} else {
+				abs = append(abs, f)
+			}
+		}
+		emitEvent("done", map[string]any{"kind": "recv", "files": len(files), "paths": abs})
+		return
 	}
 	fmt.Printf("\n✓ 接收完成(%d 个文件):\n", len(files))
 	for _, f := range files {

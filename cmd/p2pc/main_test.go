@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"strings"
@@ -56,5 +57,36 @@ func TestPrintCodeFormat(t *testing.T) {
 	}
 	if !strings.Contains(got, "p2pc recv ABCD-1234-WXYZ") {
 		t.Fatalf("接收提示行漂移: %q", got)
+	}
+}
+
+// TestJSONEventShape --json 事件形态锁(NDJSON:单行合法 JSON,event 字段在场)。
+func TestJSONEventShape(t *testing.T) {
+	jsonOut = true
+	t.Cleanup(func() { jsonOut = false })
+	got := captureStdout(t, func() {
+		emitEvent("code", map[string]any{"code": "ABCD-1234-WXYZ"})
+		emitEvent("done", map[string]any{"kind": "recv", "files": 1, "paths": []string{"/a/b"}})
+	})
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("应两行事件: %q", got)
+	}
+	for i, ln := range lines {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(ln), &m); err != nil {
+			t.Fatalf("行%d 非 JSON: %q", i, ln)
+		}
+		if m["event"] == nil {
+			t.Fatalf("行%d 缺 event 字段: %q", i, ln)
+		}
+	}
+	if !strings.Contains(lines[0], `"code":"ABCD-1234-WXYZ"`) {
+		t.Fatalf("code 事件形态漂移: %q", lines[0])
+	}
+	// 非 JSON 模式静默
+	jsonOut = false
+	if out := captureStdout(t, func() { emitEvent("code", nil) }); out != "" {
+		t.Fatalf("非 JSON 模式应静默: %q", out)
 	}
 }
