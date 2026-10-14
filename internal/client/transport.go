@@ -137,14 +137,14 @@ func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate
 		MaxIdleTimeout:       60 * time.Second,
 		HandshakeIdleTimeout: 10 * time.Second,
 		KeepAlivePeriod:      15 * time.Second,
-		// 流控窗口(2026-10-14 大文件失败带修复):缺省窗口在高吞吐路径上
-		// 提前耗尽——100MB 实测恒停 ~68MB(双侧 "no recent network activity",
-		// 回环仅 3-4MB/s)。发送侧被流控阻塞 + 接收侧应用层短暂停顿(写盘/
-		// 压缩)即断流。显式放大到局域网 BDP 量级,给写盘抖动留缓冲。
-		InitialStreamReceiveWindow:     8 << 20,
-		MaxStreamReceiveWindow:         32 << 20,
-		InitialConnectionReceiveWindow: 16 << 20,
-		MaxConnectionReceiveWindow:     64 << 20,
+		// 流控窗口(局域网 BDP 量级):高速直传的吞吐优化,给接收侧写盘抖动留缓冲。
+		// ⚠️ 曾被误当"68MB/83.5s 定长墙"的修复——真根因是 punch 在 socket 上留的
+		// 读截止未清就交接 QUIC(见 establish 的 SetReadDeadline(time.Time{})),
+		// 截止一到双侧 QUIC 读循环饿死,冻结点=链路速度×打洞后剩余预算,与窗口无关。
+		InitialStreamReceiveWindow:     32 << 20,
+		MaxStreamReceiveWindow:         128 << 20,
+		InitialConnectionReceiveWindow: 64 << 20,
+		MaxConnectionReceiveWindow:     256 << 20,
 	}
 	if qlogDir := os.Getenv("PB_P2P_QLOG"); qlogDir != "" {
 		_ = os.MkdirAll(qlogDir, 0o755)

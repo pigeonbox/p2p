@@ -332,6 +332,17 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 	tgt, punchErr := punchDual(sock4, sock6, peer, k, fast, mapped)
 
 	if punchErr == nil {
+		// 打洞胜出族交接前清读截止(2026-10-15 定长墙根因):punch 在 socket 上
+		// 留了 budget 期读截止,带截止交接给 QUIC 后,截止一到 quic-go 读循环
+		// 永远读超时——双侧传输在 (预算-打洞耗时) 秒后集体冻结,表现为恒定
+		// "定长墙"(68MB/83.5s 实为链路速度×打洞后剩余预算)。清零=QUIC 独占后无截止。
+		_ = tgt.sock.SetReadDeadline(time.Time{})
+		// 败族套接字即刻关闭:终止其上仍阻塞的 punch 读循环(其读截止到期前一直挂着)
+		if tgt.sock == sock4 {
+			_ = sock6.Close()
+		} else {
+			_ = sock4.Close()
+		}
 		remote := peer.pickUDP(famOf(tgt.sock))
 		var x *xport
 		var derr error
@@ -363,6 +374,13 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 		tgt2, err2 := punchDual(sock4, sock6, peer, k, c.opt.PunchBudget, mapped)
 		if err2 != nil {
 			return nil, "", fmt.Errorf("打洞失败且%s: %w", fallReason, err2)
+		}
+		// 同快路径:清读截止+关败族(定长墙同款根因)
+		_ = tgt2.sock.SetReadDeadline(time.Time{})
+		if tgt2.sock == sock4 {
+			_ = sock6.Close()
+		} else {
+			_ = sock4.Close()
 		}
 		var x *xport
 		var derr error
