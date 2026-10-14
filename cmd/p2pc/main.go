@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pigeonbox/kit/version"
 	"github.com/pigeonbox/p2p/internal/client"
@@ -41,6 +42,10 @@ func main() {
 		send(os.Args[2:])
 	case "recv":
 		receive(os.Args[2:])
+	case "directory":
+		directoryCmd(os.Args[2:])
+	case "mailbox":
+		mailboxCmd(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	case "-v", "--version", "version":
@@ -57,10 +62,14 @@ func usage() {
 用法:
   p2pc send <文件|目录>... [--registry URL] [--code 口令] [--relay HOST:PORT]
                   [--key PATH] [--no-punch] [--quiet] [--json]
+                  [--invite-to NODE_ID] [--invite-note 附言] [--invite-name 显示名]
   p2pc recv <口令> [--registry URL] [--out DIR] [--yes] [--json]
                   [--relay HOST:PORT] [--key PATH] [--no-punch] [--quiet]
                   （口令传 "-" 时从 PB_P2P_CODE 环境变量读取——argv 不留码,
                     服务进程调用方(server supervisor)的硬化通道）
+  p2pc directory [--registry URL]                  列在线名录(JSON)
+  p2pc mailbox [--registry URL] [--key PATH] [--watch] [--interval 5s]
+                  [--discoverable] [--name 显示名]  弹出/轮询密封邀请(NDJSON)
 
 说明:
   --registry   p2pd 注册中心基址(默认 http://127.0.0.1:12346)
@@ -69,6 +78,11 @@ func usage() {
   成功后文件边界自动升级直连;中继需服务端 relay.enabled=true,现默认开)
   目录会整棵递归;接收方可逐文件授权(--yes 跳过交互全部接受)
   --json       NDJSON 事件流(code/done/error),供程序调用方解析;缺省纯文本
+  --invite-to  发送后向名录对端信箱投递密封邀请(收端 NAT 后可达;
+               发邀请=自愿入名录;失败仅告警不影响发送)
+  mailbox      邀请 = 口令 bearer;开箱以名录 box_pub 验真,失败即跳过;
+               --discoverable 注册进名录(接收邀请的前提;core supervisor
+               以 --watch --discoverable 长驻,stdout 恒 NDJSON)
 `)
 	os.Exit(2)
 }
@@ -91,6 +105,9 @@ func send(args []string) {
 	var code string
 	fs.StringVar(&code, "code", "", "指定口令(缺省自动生成)")
 	jsonFlag := fs.Bool("json", false, "NDJSON 事件流输出(机器可读:code/done/error)")
+	inviteTo := fs.String("invite-to", "", "发送后向该名录对端投递密封邀请(node_id)")
+	inviteNote := fs.String("invite-note", "", "邀请附言")
+	inviteName := fs.String("invite-name", "", "邀请显示名(缺省主机名)")
 	if err := parseArgs(fs.FlagSet, args); err != nil {
 		os.Exit(2)
 	}
@@ -123,6 +140,19 @@ func send(args []string) {
 	} else {
 		printCode(code)
 	}
+	// 密封邀请(便利非通路):公告由 Send 内部落,邀请先行投递——收端取件
+	// 后自行 resolve(带重试),公告竞态由收端重试吸收。失败仅告警。
+	if strings.TrimSpace(*inviteTo) != "" {
+		if err := client.SendInvite(*opt, code, strings.ToLower(strings.TrimSpace(*inviteTo)), inviteDisplayName(*inviteName), *inviteNote); err != nil {
+			if jsonOut {
+				emitEvent("invite_error", map[string]any{"msg": err.Error()})
+			} else {
+				fmt.Fprintf(os.Stderr, "⚠ 邀请投递失败(不影响发送): %v\n", err)
+			}
+		} else if jsonOut {
+			emitEvent("invite_sent", map[string]any{"to": *inviteTo})
+		}
+	}
 	if _, err := c.Send(paths, code); err != nil {
 		failJSON(err)
 	}
@@ -131,6 +161,17 @@ func send(args []string) {
 	} else {
 		fmt.Println("\n✓ 发送完成")
 	}
+}
+
+// inviteDisplayName 邀请显示名:旗标 > 主机名 > "p2pc"。
+func inviteDisplayName(flag string) string {
+	if s := strings.TrimSpace(flag); s != "" {
+		return s
+	}
+	if h, err := os.Hostname(); err == nil && strings.TrimSpace(h) != "" {
+		return h
+	}
+	return "p2pc"
 }
 
 // printCode 口令行格式契约：server supervisor（p2px.scanLines）与 desktop
@@ -243,6 +284,57 @@ func receive(args []string) {
 			fmt.Println("  " + f)
 		}
 	}
+}
+
+// directoryCmd 在线名录:JSON 输出 discoverable 节点列表。
+func directoryCmd(args []string) {
+	fs := newFlagSet("p2pc directory")
+	opt := commonFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	peers, err := client.DirectoryPeers(*opt)
+	if err != nil {
+		fail(err)
+	}
+	b, _ := json.MarshalIndent(map[string]any{"nodes": peers}, "", "  ")
+	fmt.Println(string(b))
+}
+
+// mailboxCmd 信箱取件:弹出(或 --watch 长驻轮询)密封邀请,开箱验真后
+// NDJSON 输出 {"event":"invite",...}——core supervisor 与脚本同面。
+func mailboxCmd(args []string) {
+	fs := newFlagSet("p2pc mailbox")
+	opt := commonFlags(fs)
+	watch := fs.Bool("watch", false, "长驻轮询(core supervisor 形态;退出由父进程管理)")
+	interval := fs.Duration("interval", 5*time.Second, "轮询间隔(--watch)")
+	discoverable := fs.Bool("discoverable", false, "注册进在线名录(接收邀请的前提)")
+	name := fs.String("name", "", "名录显示名(缺省 p2pc)")
+	if err := parseArgs(fs.FlagSet, args); err != nil {
+		os.Exit(2)
+	}
+	err := client.RunMailbox(client.MailboxOptions{
+		Options:      *opt,
+		Watch:        *watch,
+		Interval:     *interval,
+		Discoverable: *discoverable,
+		DisplayName:  *name,
+	}, printInviteEvent)
+	if err != nil {
+		fail(err)
+	}
+}
+
+// printInviteEvent 邀请 NDJSON 单行(stdout 契约:p2px 信箱 watcher 解析)。
+func printInviteEvent(inv client.InvitePayload) {
+	b, _ := json.Marshal(map[string]any{
+		"event": "invite",
+		"code":  inv.Code,
+		"from":  inv.NodeID,
+		"name":  inv.Name,
+		"note":  inv.Note,
+	})
+	fmt.Println(string(b))
 }
 
 // chooseInteractively 逐文件授权:回车=全部;输入序号(如 1,3-4)=部分。
