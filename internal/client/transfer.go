@@ -530,26 +530,37 @@ func recvOneFileMeta(x *xport, dir string, e manifestEntry, opts transferOpts, g
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return "", err
 	}
+	// 迅雷式暂存（2026-10-14 GB 级设计）：传输写 <name>.part，完成才原子改名
+	// ——半成品不伪装成完整文件；断点续传按 .part 的字节数续。
+	work := out + ".part"
+	complete := false
 
 	offset := int64(0)
 	resume := !opts.HashAfter // 单遍哈希与续传互斥
 	if resume {
-		if fi, err := os.Stat(out); err == nil && !fi.IsDir() && fi.Size() <= meta.Size {
+		if fi, err := os.Stat(work); err == nil && !fi.IsDir() && fi.Size() <= meta.Size {
 			offset = fi.Size()
+		} else if fi, err := os.Stat(out); err == nil && !fi.IsDir() && fi.Size() == meta.Size {
+			offset = fi.Size() // 已完整（改名前的历史残留场景）：零传输快进
 		}
 	}
-	f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(work, os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		_ = f.Close()
+		if complete {
+			_ = os.Rename(work, out)
+		}
+	}()
 
 	hasher := sha256.New()
 	if offset > 0 {
 		// GB 级续传:前缀哈希必须流式(曾用 os.ReadFile 整读——500MB 续传
 		// 即 500MB 内存尖峰)。读校验失败(size 变了/读错误)=前缀不可信,
 		// 回退全量重传。
-		pf, perr := os.Open(out)
+		pf, perr := os.Open(work)
 		if perr != nil {
 			offset = 0
 		} else {
@@ -592,7 +603,7 @@ func recvOneFileMeta(x *xport, dir string, e manifestEntry, opts transferOpts, g
 
 	useMulti := !opts.HashAfter && x.accept != nil && offset == 0 && meta.Size >= minMultiStreamSize
 	if useMulti {
-		if err := recvFileMulti(x, f, out, meta, opts, got); err != nil {
+		if err := recvFileMulti(x, f, work, meta, opts, got); err != nil {
 			return "", err
 		}
 	} else {
@@ -631,10 +642,15 @@ func recvOneFileMeta(x *xport, dir string, e manifestEntry, opts transferOpts, g
 		}
 		expect = hm.SHA256
 		sum := hex.EncodeToString(hasher.Sum(nil))
-		return finishFileAck(x, f, out, e.ID, expect, sum)
+		name, ferr := finishFileAck(x, f, work, e.ID, expect, sum)
+		if ferr == nil {
+			complete = true
+			name = out
+		}
+		return name, ferr
 	case useMulti:
 		_ = f.Sync()
-		rd2, rerr := os.Open(out)
+		rd2, rerr := os.Open(work)
 		if rerr != nil {
 			return "", rerr
 		}
@@ -644,9 +660,19 @@ func recvOneFileMeta(x *xport, dir string, e manifestEntry, opts transferOpts, g
 		if cerr != nil {
 			return "", fmt.Errorf("全量校验读回: %w", cerr)
 		}
-		return finishFileAck(x, f, out, e.ID, expect, hex.EncodeToString(h.Sum(nil)))
+		name, ferr := finishFileAck(x, f, work, e.ID, expect, hex.EncodeToString(h.Sum(nil)))
+		if ferr == nil {
+			complete = true
+			name = out
+		}
+		return name, ferr
 	default:
-		return finishFileAck(x, f, out, e.ID, expect, hex.EncodeToString(hasher.Sum(nil)))
+		name, ferr := finishFileAck(x, f, work, e.ID, expect, hex.EncodeToString(hasher.Sum(nil)))
+		if ferr == nil {
+			complete = true
+			name = out
+		}
+		return name, ferr
 	}
 }
 
