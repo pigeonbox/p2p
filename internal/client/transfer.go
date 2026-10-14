@@ -546,12 +546,19 @@ func recvOneFileMeta(x *xport, dir string, e manifestEntry, opts transferOpts, g
 
 	hasher := sha256.New()
 	if offset > 0 {
-		prefix, perr := os.ReadFile(out)
-		if perr != nil || int64(len(prefix)) != offset {
+		// GB 级续传:前缀哈希必须流式(曾用 os.ReadFile 整读——500MB 续传
+		// 即 500MB 内存尖峰)。读校验失败(size 变了/读错误)=前缀不可信,
+		// 回退全量重传。
+		pf, perr := os.Open(out)
+		if perr != nil {
 			offset = 0
-			hasher.Reset()
 		} else {
-			hasher.Write(prefix)
+			n, cerr := io.CopyN(hasher, pf, offset)
+			_ = pf.Close()
+			if cerr != nil || n != offset {
+				offset = 0
+				hasher.Reset()
+			}
 		}
 	}
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
