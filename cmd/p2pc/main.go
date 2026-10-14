@@ -58,6 +58,8 @@ func usage() {
                   [--key PATH] [--no-punch] [--quiet]
   p2pc recv <口令> [--registry URL] [--out DIR] [--yes]
                   [--relay HOST:PORT] [--key PATH] [--no-punch] [--quiet]
+                  （口令传 "-" 时从 PB_P2P_CODE 环境变量读取——argv 不留码,
+                    服务进程调用方(server supervisor)的硬化通道）
 
 说明:
   --registry   p2pd 注册中心基址(默认 http://127.0.0.1:12346)
@@ -112,11 +114,31 @@ func send(args []string) {
 			fail(err)
 		}
 	}
-	fmt.Printf("口令: %s\n接收方执行: p2pc recv %s\n等待对端接入...\n", code, code)
+	printCode(code)
 	if _, err := c.Send(paths, code); err != nil {
 		fail(err)
 	}
 	fmt.Println("\n✓ 发送完成")
+}
+
+// printCode 口令行格式契约：server supervisor（p2px.scanLines）与 desktop
+// sidecar 都按 "口令: XXXX-XXXX-XXXX" 解析 stdout——本函数是格式单源，
+// 变更必须同步下游解析器并 bump 说明（main_test.go 锁定）。
+func printCode(code string) {
+	fmt.Printf("口令: %s\n接收方执行: p2pc recv %s\n等待对端接入...\n", code, code)
+}
+
+// resolveRecvCode 口令来源：位置参数直传；"-" = 从 PB_P2P_CODE env 读
+// （argv 不留码，同机 ps 不可见——server supervisor 硬化通道，2026-10-14）。
+func resolveRecvCode(args []string) (string, error) {
+	if len(args) == 0 || args[0] == "-" {
+		code := strings.ToUpper(strings.TrimSpace(os.Getenv("PB_P2P_CODE")))
+		if code == "" {
+			return "", fmt.Errorf("口令缺失：位置参数或 PB_P2P_CODE env 二选一（recv - 走 env）")
+		}
+		return code, nil
+	}
+	return strings.ToUpper(strings.TrimSpace(args[0])), nil
 }
 
 func receive(args []string) {
@@ -132,7 +154,11 @@ func receive(args []string) {
 		fmt.Fprintln(os.Stderr, "✗ 缺少口令参数")
 		os.Exit(2)
 	}
-	code := strings.ToUpper(strings.TrimSpace(fs.Arg(0)))
+	code, err := resolveRecvCode(fs.Args())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+		os.Exit(2)
+	}
 	if !*yes {
 		opt.ChooseFiles = chooseInteractively
 	}
