@@ -59,6 +59,9 @@ export PB_P2P_REGISTRIES=http://p2p1.example.com:12346,http://p2p2.example.com:1
 # 或 CLI: p2pc send 文件 --registry pigeonbox.example.com --registries ...
 ```
 
+v0.6.2 起 p2pc 支持 `PB_P2P_CODE` env 传码:`p2pc recv -` 从环境变量读口令,
+argv 不留码——同机 `ps` 看不到口令,适合共享主机/CI 环境。
+
 ## 滥用治理
 
 - 注册/公告/信令全量 Ed25519 签名准入(无身份写入不存在);

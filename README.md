@@ -19,6 +19,8 @@ PigeonBox 生态的 **P2P 联邦注册中心**：让任意多个 PigeonBox 节�
 | **设备直传** | PAKE → 加密候选交换 → UDP 同时开洞 → 失败走加密中继；AEAD 传输+断点续传+sha256 校验 | ✅ v0.3（`p2pc` 参考客户端，六平台二进制随 Release 发布） |
 | 安全加固 | wire AEAD 跨方向 nonce 重用修复（方向标签分离 nonce 空间）、注册 token 恒时比较、注册中心容量治理（全局节点/公告上限）、中继每 IP 限流、信令会话存活检查、HKDF 密钥派生 | ✅ v0.4 |
 | **传输协议 v2（破坏性）** | v0.4 起 wire 帧 nonce 空间与密钥派生（HKDF）整体轮换，**与 v0.3.x 及更早版本互不兼容**——双端（p2pc/desktop）须同版升级，旧版互传首帧直接失败 | ✅ v0.4 |
+| 安全运营加固 + 传输协议 v3 | XFF 末段取 IP（可信反代网段）、resolve per-hash 限流（单口令枚举闸）、TLS 信令、公告快照持久化（重启消除失联窗口）、原生 fuzz×6；协议 v3=配对后显式版本协商（不一致给可读错误而非密码学报错）+ QUIC 大文件多流并行（每流独立派生密钥） | ✅ v0.5 |
+| **传输协议 v4（破坏性）** | 多文件 manifest 流（逐文件授权/部分接受/目录白名单消毒/zstd 压缩/单遍哈希）、IPv6 双栈、PCP·NAT-PMP·UPnP 端口映射、先通后优（中继先行+后台打洞升级直连）、DNS SRV 多注册中心+rendezvous 分片、中继默认开；**双端（p2pc/desktop）须同版** | ✅ v0.6 |
 
 非目标：内容 DHT 去中心化、离线传输、文件中转存储。
 
@@ -48,6 +50,10 @@ p2pc send 报告.pdf --registry http://p2p.example.com:12346
 
 # 接收方(输入同一口令,文件直连下载到当前目录)
 p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
+
+# 接收方亦可经 env 传码(v0.6.2 起):`recv -` 从 PB_P2P_CODE 读口令,
+# argv 不留码——同机 `ps` 看不到口令,适合共享主机/CI 环境
+PB_P2P_CODE=XXXX-XXXX-XXXX p2pc recv - --registry http://p2p.example.com:12346
 ```
 
 流程：节点注册+口令公告 → WS 信令配对（接收方与 resolve 源身份交叉核对）→ PAKE（口令派生会话密钥）→ 候选地址交换（PAKE 派生密钥加密）→ **UDP 同时开洞**（反射器提供公网映射；成功走 QUIC 指纹钉定 mTLS 直连）→ 失败回落**加密中继**（12347，令牌配对+限速）→ AEAD 消息传输（meta/ready/chunk/final，断点续传）→ sha256 全量校验。服务端全程只见密文。
@@ -62,6 +68,14 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 ```
 
 安全：启动生成随机令牌（进入须用启动打印的完整地址），回环部署校验 Host 头防 DNS rebinding；上传流式落临时目录（保留原始文件名给对端），传输完即清理。六平台二进制随 Release 发布（资产名 `p2pc-web-<triple>`）。
+
+### 分发面（p2pc 随包渠道）
+
+除本仓 Release 的独立二进制外，p2pc 还经以下渠道随包分发（版本均随发布列车对齐）：
+
+- **server 镜像**：Dockerfile 按架构内置 `/app/p2pc`（版本真相源为 server 仓 `.p2pc-version`，构建参数 `P2PC_VERSION` 缺省=优雅降级）；
+- **fnos / qnap / openwrt 安装包**：各自随包 p2pc 二进制，应用内开箱可用；
+- **core `p2px` supervisor**：standalone 部署模式下由 core 进程内调度（spawn p2pc 子进程做数据面），管理面 `/admin/p2p/*` 六端点（contracts `AdminP2PService`）。
 
 ## 配置
 
@@ -97,6 +111,7 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 | `PB_P2P_SERVER_TLS_CERT/_KEY` | — | HTTP/WS 信令 TLS(成对配置) |
 | `PB_P2P_STORE_SNAPSHOT_PATH` | — | 公告快照持久化(重启消除失联窗口) |
 | `PB_P2P_METRICS_STRICT` | `false` | 未配管理口令时 /metrics 404(公共部署加固) |
+| `PB_P2P_CODE` | — | p2pc 客户端(v0.6.2 起):`p2pc recv -` 从 env 读取口令,argv 不留码,防同机 ps 可见 |
 
 客户端多源:`PB_P2P_REGISTRIES` 未设时可用 `--registries`(逗号分隔);
 `--registry` 传裸域名自动走 DNS SRV(`_p2pc._tcp.<域>`)发现。公共节点
