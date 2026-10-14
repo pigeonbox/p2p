@@ -134,6 +134,9 @@ p2pc send 报告.pdf --json
 | `POST /v1/announces` | 宣告 `code_hash → 本节点`（先到先得，冲突 409） |
 | `DELETE /v1/announces/{hash}` | 撤销（仅宣告节点） |
 | `GET /v1/resolve/{hash}` | 解析 → `{node_id, url, ...}`；未接入 404 |
+| `GET /v1/directory` | **在线名录（2026-10-14）**：opt-in 可发现节点列表 `{nodes: [{node_id, name, url, box_pub, online_since}]}`，零敏感（无口令/房间信息） |
+| `POST /v1/mailbox/{to_node}` | **邀请信箱（2026-10-14）**：密封邀请投递 `{from, nonce, boxed}`——纯密文，p2pd 不验内容；TTL 15min / 每箱 ≤10 条 / 单条 ≤4KB |
+| `GET /v1/mailbox/{to_node}` | 弹出全部密封条目（**取后即删**；窃取=拒绝服务非泄密，收端开箱验真） |
 | `WS /v1/channel/{hash}` | **信令信道（M3）**：同 hash 双方配对，转发不透明握手帧（见下节契约） |
 | `GET /health` · `GET /metrics` | 健康检查（显式 GET）/ Prometheus 指标 |
 | `GET/DELETE /v1/admin/*` | 统计/列表/强制下线（Bearer 管理口令） |
@@ -144,10 +147,13 @@ p2pc send 报告.pdf --json
 
 ```
 注册/心跳:   node_id | url | name | version | caps(逗号连接) | ttl_seconds | nonce | ts
+注册/心跳    同上 | discoverable(1/0) | public_url | box_pub        ← 名录扩展段（2026-10-14）
 公告:        node_id | code_hash | expires_at | size_hint | ts
 注销节点:    node_id | ts
 撤销公告:    node_id | code_hash | ts
 ```
+
+名录扩展段（`discoverable`/`public_url`/`box_pub` 任一出现时）必须使用扩展负载签名；请求携带扩展字段但签旧负载一律 401。未携带扩展字段的注册（旧客户端）**不触碰**既有名录状态（sticky：federation 心跳与 p2pc 直传注册共写同一 node_id，不会互踩名录可见性）。`discoverable=1` 必须携带合法 `box_pub`（32 字节 X25519 公钥 hex，自 Ed25519 节点私钥 seed 推导）。
 
 `ts` 为 unix 秒，允许 ±300s 偏移。参考实现见 [scripts/smokegen](./scripts/smokegen)（生态侧已由 core `federation` 域服务封装）。
 

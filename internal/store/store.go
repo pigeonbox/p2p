@@ -21,6 +21,14 @@ type Node struct {
 	IP           string    `json:"ip"`   // 注册来源 IP(管理端滥用治理用)
 	RegisteredAt time.Time `json:"registered_at"`
 	ExpiresAt    time.Time `json:"expires_at"`
+	// 名录(presence directory)扩展段(2026-10-14 在线名录+邀请信箱):
+	// Discoverable opt-in 可发现;PublicURL 名录展示的对外基址(与 url 独立
+	// ——p2pc 直传注册的 url 是占位符);BoxPub X25519 密封公钥 hex(nacl/box,
+	// 自 Ed25519 seed 推导)。缺省 false/空:旧格式续租不触碰(sticky,防
+	// federation 心跳与 p2pc 直传注册对同一 node_id 的 upsert 互踩)。
+	Discoverable bool   `json:"discoverable"`
+	PublicURL    string `json:"public_url,omitempty"`
+	BoxPub       string `json:"box_pub,omitempty"`
 }
 
 // Announce 一条口令公告: code_hash → 源节点。

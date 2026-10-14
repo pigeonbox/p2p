@@ -56,15 +56,44 @@ type Service struct {
 	nonceMu   sync.Mutex
 	nonceSeen map[string]time.Time
 	nonceOps  int
+
+	// 邀请信箱(2026-10-14:密封邀请投递,纯密文,零持久化)
+	mbox nodeMailbox
 }
 
 // New 构造服务。
 func New(p Params) *Service {
-	return &Service{p: p, now: time.Now}
+	s := &Service{p: p, now: time.Now}
+	s.mbox.nowFunc = func() time.Time { return s.now() } // 经闭包转发,测试可整体拨钟
+	return s
+}
+
+// MailboxPost 密封邀请投递(目标须处于有效租约内)。
+func (s *Service) MailboxPost(ctx context.Context, toNode string, in MailboxInput) error {
+	toNode = strings.ToLower(toNode)
+	if _, err := s.liveNodeErr(ctx, toNode); err != nil {
+		return err
+	}
+	return s.mbox.post(toNode, in)
+}
+
+// MailboxPop 弹出全部密封条目(取后即删;目标须处于有效租约内)。
+func (s *Service) MailboxPop(ctx context.Context, toNode string) ([]SealedEntry, error) {
+	toNode = strings.ToLower(toNode)
+	if _, err := s.liveNodeErr(ctx, toNode); err != nil {
+		return nil, err
+	}
+	entries, _ := s.mbox.pop(toNode)
+	return entries, nil
 }
 
 // RegisterInput 注册/心跳请求。node_id 即公钥,sig 对 BuildPayload(
 // node_id,url,name,version,caps,ttl_seconds,nonce,ts) 的 Ed25519 签名。
+// 名录扩展段(Discoverable/PublicURL/BoxPub)任一出现时,sig 改对扩展负载
+// BuildPayload(旧八字段,discoverable(1/0),public_url,box_pub)——双格式
+// 向后兼容:旧客户端不带=不可发现。缺省(未出现)字段注册时 sticky 保留
+// 既有名录状态(federation 心跳/p2pc 直传注册与名录注册共写同一 node_id,
+// 非显式字段不得互踩)。
 type RegisterInput struct {
 	NodeID     string   `json:"node_id"`
 	URL        string   `json:"url"`
@@ -76,6 +105,10 @@ type RegisterInput struct {
 	TS         int64    `json:"ts"`
 	Sig        string   `json:"sig"`
 	Token      string   `json:"token,omitempty"`
+	// Discoverable nil=未携带(sticky);指针以区分「不带」与「显式 false」。
+	Discoverable *bool  `json:"discoverable,omitempty"`
+	PublicURL    string `json:"public_url,omitempty"`
+	BoxPub       string `json:"box_pub,omitempty"`
 }
 
 // AnnounceInput 公告请求。sig 覆盖 BuildPayload(
@@ -145,8 +178,20 @@ func (s *Service) RegisterNode(ctx context.Context, in RegisterInput, ip string)
 	if err != nil {
 		return store.Node{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
+	// 名录扩展段:任一出现即验扩展负载(旧签名拒绝),字段本身先行校验。
+	presence, err := validatePresence(in)
+	if err != nil {
+		return store.Node{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
 	payload := BuildPayload(in.NodeID, in.URL, in.Name, in.Version,
 		strings.Join(in.Caps, ","), fmt.Sprint(in.TTLSeconds), in.Nonce, fmt.Sprint(in.TS))
+	if presence.extended {
+		disc := "0"
+		if presence.discoverable {
+			disc = "1"
+		}
+		payload = BuildPayload(string(payload), disc, presence.publicURL, presence.boxPub)
+	}
 	if err := verifySig(pub, payload, in.Sig); err != nil {
 		return store.Node{}, err
 	}
@@ -171,6 +216,29 @@ func (s *Service) RegisterNode(ctx context.Context, in RegisterInput, ip string)
 	n := store.Node{
 		ID: in.NodeID, URL: in.URL, Name: name, Version: version, Caps: caps,
 		IP: ip, RegisteredAt: now, ExpiresAt: now.Add(ttl),
+	}
+	// 名录段 sticky:未携带扩展字段的注册(federation 心跳/p2pc 直传等旧格式
+	// 客户端)不触碰既有名录状态;显式携带才覆写。
+	if prev, ok, gerr := s.p.Store.GetNode(ctx, in.NodeID); gerr == nil && ok {
+		if in.Discoverable == nil {
+			n.Discoverable = prev.Discoverable
+		} else {
+			n.Discoverable = presence.discoverable
+		}
+		if in.PublicURL == "" {
+			n.PublicURL = prev.PublicURL
+		} else {
+			n.PublicURL = presence.publicURL
+		}
+		if in.BoxPub == "" {
+			n.BoxPub = prev.BoxPub
+		} else {
+			n.BoxPub = presence.boxPub
+		}
+	} else if in.Discoverable != nil {
+		n.Discoverable = presence.discoverable
+		n.PublicURL = presence.publicURL
+		n.BoxPub = presence.boxPub
 	}
 	if err := s.p.Store.UpsertNode(ctx, n); err != nil {
 		return store.Node{}, fmt.Errorf("存储节点: %w", err)
@@ -378,7 +446,7 @@ func (s *Service) DeregisterNode(ctx context.Context, in RevokeInput) error {
 }
 
 // Sweep 物理回收过期租约与公告,返回回收数量(供日志/指标)。
-// 过期节点的公告一并级联清除。
+// 过期节点的公告与信箱一并级联清除。
 func (s *Service) Sweep(ctx context.Context) (nodes, announces int) {
 	now := s.now()
 	nodeList, err := s.p.Store.ListNodes(ctx)
@@ -388,6 +456,7 @@ func (s *Service) Sweep(ctx context.Context) (nodes, announces int) {
 				if _, derr := s.p.Store.DeleteNode(ctx, n.ID); derr == nil {
 					// 单条级联失败可忽略,下轮清扫兜底
 					_, _ = s.p.Store.DeleteAnnouncesByNode(ctx, n.ID)
+					s.mbox.dropNode(n.ID) // 信箱随节点租约级联清除
 					nodes++
 				}
 			}

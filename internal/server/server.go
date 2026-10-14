@@ -129,6 +129,15 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "DELETE /v1/announces/{hash}", "announce_delete", s.writeLim, s.handleRevoke)
 	s.route(mux, "GET /v1/resolve/{hash}", "resolve", s.resolveLim, s.handleResolve)
 
+	// 在线名录(2026-10-14):仅 discoverable 节点,零敏感(node_id/名称/基址/
+	// 密封公钥/上线时刻),读路径限流同 resolve。
+	s.route(mux, "GET /v1/directory", "directory", s.resolveLim, s.handleDirectory)
+
+	// 邀请信箱(2026-10-14):纯密文投递/弹出,p2pd 不验内容。投递与弹出
+	// 均为写语义(弹出即删),同走写桶。
+	s.route(mux, "POST /v1/mailbox/{to_node}", "mailbox_post", s.writeLim, s.handleMailboxPost)
+	s.route(mux, "GET /v1/mailbox/{to_node}", "mailbox_pop", s.writeLim, s.handleMailboxPop)
+
 	s.route(mux, "GET /v1/admin/stats", "admin_stats", s.adminLim, s.adminGate(s.handleAdminStats))
 	s.route(mux, "GET /v1/admin/nodes", "admin_nodes", s.adminLim, s.adminGate(s.handleAdminNodes))
 	s.route(mux, "GET /v1/admin/announces", "admin_announces", s.adminLim, s.adminGate(s.handleAdminAnnounces))
@@ -246,6 +255,39 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		"node_id": node.ID, "url": node.URL, "name": node.Name,
 		"expires_at": a.ExpiresAt.Unix(), "size_hint": a.SizeHint,
 	})
+}
+
+// handleDirectory 在线名录:仅 discoverable 且租约未过期节点。
+func (s *Server) handleDirectory(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.svc.Directory(r.Context())
+	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": entries})
+}
+
+// handleMailboxPost 密封邀请投递(纯密文,服务端不验内容)。
+func (s *Server) handleMailboxPost(w http.ResponseWriter, r *http.Request) {
+	var in registry.MailboxInput
+	if !s.decode(w, r, &in) {
+		return
+	}
+	if err := s.svc.MailboxPost(r.Context(), r.PathValue("to_node"), in); err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleMailboxPop 弹出全部密封条目(取后即删;窃取=拒绝服务非泄密)。
+func (s *Server) handleMailboxPop(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.svc.MailboxPop(r.Context(), r.PathValue("to_node"))
+	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
 }
 
 // adminGate 管理端口令门:未配置口令时整体禁用。
