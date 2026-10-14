@@ -21,6 +21,7 @@ PigeonBox 生态的 **P2P 联邦注册中心**：让任意多个 PigeonBox 节�
 | **传输协议 v2（破坏性）** | v0.4 起 wire 帧 nonce 空间与密钥派生（HKDF）整体轮换，**与 v0.3.x 及更早版本互不兼容**——双端（p2pc/desktop）须同版升级，旧版互传首帧直接失败 | ✅ v0.4 |
 | 安全运营加固 + 传输协议 v3 | XFF 末段取 IP（可信反代网段）、resolve per-hash 限流（单口令枚举闸）、TLS 信令、公告快照持久化（重启消除失联窗口）、原生 fuzz×6；协议 v3=配对后显式版本协商（不一致给可读错误而非密码学报错）+ QUIC 大文件多流并行（每流独立派生密钥） | ✅ v0.5 |
 | **传输协议 v4（破坏性）** | 多文件 manifest 流（逐文件授权/部分接受/目录白名单消毒/zstd 压缩/单遍哈希）、IPv6 双栈、PCP·NAT-PMP·UPnP 端口映射、先通后优（中继先行+后台打洞升级直连）、DNS SRV 多注册中心+rendezvous 分片、中继默认开；**双端（p2pc/desktop）须同版** | ✅ v0.6 |
+| p2pc `--json` 事件流 | NDJSON 单行事件（code/done/error），供程序调用方解析；形态锁单测；缺省纯文本输出不变 | ✅ v0.6.3 |
 
 非目标：内容 DHT 去中心化、离线传输、文件中转存储。
 
@@ -54,6 +55,12 @@ p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
 # 接收方亦可经 env 传码(v0.6.2 起):`recv -` 从 PB_P2P_CODE 读口令,
 # argv 不留码——同机 `ps` 看不到口令,适合共享主机/CI 环境
 PB_P2P_CODE=XXXX-XXXX-XXXX p2pc recv - --registry http://p2p.example.com:12346
+
+# 程序调用方(v0.6.3 起):--json 输出 NDJSON 事件流(send/recv 均支持;
+# recv 下强制非交互;缺省纯文本不变)
+p2pc send 报告.pdf --json
+# {"event":"code","code":"XXXX-XXXX-XXXX"}
+# {"event":"done","kind":"send"}
 ```
 
 流程：节点注册+口令公告 → WS 信令配对（接收方与 resolve 源身份交叉核对）→ PAKE（口令派生会话密钥）→ 候选地址交换（PAKE 派生密钥加密）→ **UDP 同时开洞**（反射器提供公网映射；成功走 QUIC 指纹钉定 mTLS 直连）→ 失败回落**加密中继**（12347，令牌配对+限速）→ AEAD 消息传输（meta/ready/chunk/final，断点续传）→ sha256 全量校验。服务端全程只见密文。
