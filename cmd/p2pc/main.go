@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pigeonbox/kit/async"
 	"github.com/pigeonbox/kit/version"
 	"github.com/pigeonbox/p2p/internal/client"
 )
@@ -34,6 +35,12 @@ func newFlagSet(name string) *flagSet {
 }
 
 func main() {
+	// kit/async.GoSafe 的 panic 收编日志接线。运行时解析 slog.Default()——
+	// p2pc 按子命令/TTY/JSON 换装 handler(uiHandler/缺省),固定捕获会接到
+	// 换装前的旧 handler 上。
+	async.SetPanicHandler(func(msg string, stack []byte) {
+		slog.Error("goroutine panic recovered", "msg", msg, "stack", string(stack))
+	})
 	if len(os.Args) < 2 {
 		usage()
 	}

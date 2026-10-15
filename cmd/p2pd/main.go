@@ -20,6 +20,7 @@ import (
 	reflectPkg "github.com/pigeonbox/p2p/internal/reflect"
 	relayPkg "github.com/pigeonbox/p2p/internal/relay"
 
+	"github.com/pigeonbox/kit/async"
 	"github.com/pigeonbox/kit/shutdown"
 	"github.com/pigeonbox/kit/version"
 	"github.com/pigeonbox/p2p/internal/config"
@@ -49,6 +50,11 @@ func main() {
 
 	logger := newLogger(cfg.Log.Level)
 	slog.SetDefault(logger)
+	// kit/async.GoSafe 的 panic 收编日志接线:落结构化 slog(与 core bootstrap
+	// 同款)——不接则 panic 只走 stdlib log 落 stderr,脱离日志体系。
+	async.SetPanicHandler(func(msg string, stack []byte) {
+		logger.Error("goroutine panic recovered", "msg", msg, "stack", string(stack))
+	})
 	for _, w := range cfg.Warnings {
 		logger.Warn(w)
 	}
