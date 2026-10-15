@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pigeonbox/kit/async"
 	"golang.org/x/time/rate"
 )
 
@@ -157,11 +158,13 @@ func (s *server) handle(ctx context.Context, conn net.Conn) {
 		delete(s.since, token)
 		s.mu.Unlock()
 		// 配对成功:互为管道(单信道限速),任一端断开即双向关闭
+		// (数据面面向不可信对端,panic 只许死信道不许带崩进程——GoSafe 收编;
+		//  wg.Done 留在闭包内,panic 展开时仍先于 recover 执行,配对汇合语义不变)
 		var wg sync.WaitGroup
 		lim := newBucket(s.bytesPerSec)
 		wg.Add(2)
-		go func() { defer wg.Done(); pipe(ctx, conn, peer, lim) }()
-		go func() { defer wg.Done(); pipe(ctx, peer, conn, lim) }()
+		async.GoSafe(func() { defer wg.Done(); pipe(ctx, conn, peer, lim) })
+		async.GoSafe(func() { defer wg.Done(); pipe(ctx, peer, conn, lim) })
 		wg.Wait()
 		_ = conn.Close()
 		_ = peer.Close()

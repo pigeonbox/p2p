@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pigeonbox/kit/async"
 	"github.com/pigeonbox/p2p/internal/wire"
 )
 
@@ -431,7 +432,9 @@ func sockOf(sock4, sock6 *net.UDPConn, family string) *net.UDPConn {
 // answer 到达即 arm,发送主流程在下一文件边界写 MsgSwap 换源。
 // fastTgt 非空(快打洞成功但接收方未至)时直接复用,否则补打 30s 长洞。
 func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.UDPConn, mapped string, session []byte, cert tls.Certificate, peer *candInfo, ch *channel, k [32]byte, fastTgt *punchTarget) {
-	go func() {
+	// 后台升级编排为即发即弃:panic 面=QUIC/TLS 握手(第三方库)与打洞栈,
+	// 收编后走既有"留在中继"降级路径,不拖垮传输进程。
+	async.GoSafe(func() {
 		tgt := fastTgt
 		if tgt == nil {
 			t, err := punchDual(sock4, sock6, peer, k, 30*time.Second, mapped)
@@ -451,12 +454,12 @@ func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.
 		// 先监听(接收方拨入),offer 随后——顺序不能反(真机踩坑:先 offer
 		// 后监听会让接收方拨号扑空,双侧互相等待超时)
 		dxCh := make(chan *xport, 1)
-		go func() {
+		async.GoSafe(func() {
 			dx, err := establishQUICBudget(tgt.sock, session, cert, ownNew.CertFP, nil, true, 25*time.Second)
 			if err == nil {
 				dxCh <- dx
 			}
-		}()
+		})
 		offer, _ := json.Marshal(map[string]any{"u": "offer", "fam": fam, "cand": boxed})
 		if err := ch.send(offer); err != nil {
 			return
@@ -469,13 +472,14 @@ func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.
 		case <-time.After(30 * time.Second):
 			c.log.Info("升级应答超时(全程中继)", "family", fam)
 		}
-	}()
+	})
 }
 
 // startUpgradeReceiver 升级编排(接收侧):等 offer(同时自身快/长打洞在
 // establish 已处理),按 offer 族拨发送方新候选,成功回 ready。
 func (c *Client) startUpgradeReceiver(sw *xswap, relayX *xport, sock4, sock6 *net.UDPConn, session []byte, cert tls.Certificate, ch *channel, k [32]byte) {
-	go func() {
+	// 同发送侧:即发即弃的升级编排,panic 收编后留在中继,不影响传输主流程。
+	async.GoSafe(func() {
 		raw, err := ch.recv()
 		if err != nil {
 			return
@@ -510,7 +514,7 @@ func (c *Client) startUpgradeReceiver(sw *xswap, relayX *xport, sock4, sock6 *ne
 		ready, _ := json.Marshal(map[string]any{"u": "ready"})
 		_ = ch.send(ready)
 		c.log.Info("直连升级拨号完成(等待发送方边界换源)", "family", offer.Fam)
-	}()
+	})
 }
 
 // Send 多文件发送(文件/目录混填)。code 为空则自动生成;返回实际使用的口令。

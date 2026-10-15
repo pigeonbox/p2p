@@ -19,6 +19,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/pigeonbox/kit/async"
 	"github.com/pigeonbox/p2p/internal/wire"
 )
 
@@ -727,7 +728,22 @@ func sendFileMulti(x *xport, f *os.File, size int64, opts transferOpts, progress
 	errCh := make(chan error, 1)
 	for i := 0; i < maxDataStreams; i++ {
 		wg.Add(1)
-		go func(i int, start, end int64) {
+		start, end := boundaries[i], boundaries[i+1]
+		// 多流并发是传输栈受压最大的路径(自研 wire 帧+zstd 并发搬运):
+		// 段 goroutine 挂到 GoSafe 下收编 panic。panic 与段错误同待遇转入
+		// errCh(否则 wg.Wait 后读不到错误,发送方假成功挂死在 hash/ack);
+		// 成功不投递——GoSafeWithErrChannel 成功也会发 nil,会被下方
+		// select 误判为失败并误删半成品,故此处只报错误。
+		async.GoSafe(func() {
+			defer func() {
+				if r := recover(); r != nil {
+					select {
+					case errCh <- fmt.Errorf("seg%d panic: %v", i, r):
+					default:
+					}
+					cancel()
+				}
+			}()
 			defer wg.Done()
 			if err := writeSegment(ctx, conns[i], f, start, end, opts); err != nil {
 				select {
@@ -736,7 +752,7 @@ func sendFileMulti(x *xport, f *os.File, size int64, opts transferOpts, progress
 				}
 				cancel()
 			}
-		}(i, boundaries[i], boundaries[i+1])
+		})
 	}
 
 	var sent atomic.Int64
@@ -846,7 +862,18 @@ func recvFileMulti(x *xport, f *os.File, out string, meta metaMsg, opts transfer
 	var wg sync.WaitGroup
 	for i := 0; i < streams; i++ {
 		wg.Add(1)
-		go func(i int, start, end int64) {
+		start, end := boundaries[i], boundaries[i+1]
+		// 同发送侧多流:panic 转段错误进 errCh,由调用方走"失败即清半成品"
+		// 路径;成功不投递(同 GoSafeWithErrChannel 的 nil 陷阱)。
+		async.GoSafe(func() {
+			defer func() {
+				if r := recover(); r != nil {
+					select {
+					case errCh <- fmt.Errorf("seg%d panic: %v", i, r):
+					default:
+					}
+				}
+			}()
 			defer wg.Done()
 			if err := recvSegment(conns[i], f, start, end, opts, &gotNow); err != nil {
 				select {
@@ -854,7 +881,7 @@ func recvFileMulti(x *xport, f *os.File, out string, meta metaMsg, opts transfer
 				default:
 				}
 			}
-		}(i, boundaries[i], boundaries[i+1])
+		})
 	}
 	wg.Wait()
 	got.Add(gotNow.Load())
