@@ -9,6 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/pigeonbox/kit/async"
 	"github.com/pigeonbox/p2p/internal/registry"
 )
 
@@ -147,8 +148,14 @@ func (h *Hub) handle(w http.ResponseWriter, r *http.Request) {
 			enqueue(other, serverFrame{Type: "paired", PeerID: p.nodeID})
 		}
 	}
-	go h.writePump(p)
-	go h.readPump(sess, p)
+	// WS 信令每连接双泵:长生命周期直接面向不可信对端(gorilla/websocket
+	// 读写路径+信令逻辑),p2pd 是多租户注册中心——泵 panic 带崩进程=注册
+	// 中心全体用户断服,同 relay 数据面判例:panic 只许死连接不许死进程
+	// (GoSafe 收编,panic 经 async.SetPanicHandler 落 p2pd 结构化日志)。
+	// readPump 自有 defer leave/writePump 自有 defer Close 在 panic 展开
+	// 时仍先于 GoSafe 外层 recover 执行,连接清理语义不变。
+	async.GoSafe(func() { h.writePump(p) })
+	async.GoSafe(func() { h.readPump(sess, p) })
 }
 
 func deny(conn *websocket.Conn, code int, msg string) {
