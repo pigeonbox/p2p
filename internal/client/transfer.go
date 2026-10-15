@@ -696,6 +696,41 @@ func finishFileAck(x *xport, f *os.File, out string, id int, expect, sum string)
 	return out, nil
 }
 
+// startSegWorker 多流段处理 goroutine 统一形态(发送/接收两侧共用):独立
+// goroutine 跑 fn,panic 与段错误同待遇非阻塞转投 errCh,成功零投递。
+//
+// defer 注册顺序是正确性关键(终审 F3,2026-10-16 修):先注册 wg.Done、
+// 后注册 panic-recover——LIFO 展开下 panic 路径先走 recover(向 errCh 投递)
+// 再 wg.Done,主协程 wg.Wait 返回时错误必已在 errCh;反序则 wg.Done 先执行,
+// 主协程 wg.Wait 返回后 select errCh 落 default,段 panic 被吞成假成功
+// (端到端盘上重读哈希校验能兜住坏数据,但双端成败显示不一致)。
+func startSegWorker(wg *sync.WaitGroup, errCh chan<- error, cancel func(), seg int, fn func() error) {
+	wg.Add(1)
+	async.GoSafe(func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				select {
+				case errCh <- fmt.Errorf("seg%d panic: %v", seg, r):
+				default:
+				}
+				if cancel != nil {
+					cancel()
+				}
+			}
+		}()
+		if err := fn(); err != nil {
+			select {
+			case errCh <- fmt.Errorf("seg%d: %w", seg, err):
+			default:
+			}
+			if cancel != nil {
+				cancel()
+			}
+		}
+	})
+}
+
 // sendFileMulti v3 多流(v4 语义:压缩段帧+盘上重读定稿由接收侧负责)。
 func sendFileMulti(x *xport, f *os.File, size int64, opts transferOpts, progress func(int64)) error {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -727,31 +762,14 @@ func sendFileMulti(x *xport, f *os.File, size int64, opts transferOpts, progress
 	var wg sync.WaitGroup
 	errCh := make(chan error, 1)
 	for i := 0; i < maxDataStreams; i++ {
-		wg.Add(1)
 		start, end := boundaries[i], boundaries[i+1]
 		// 多流并发是传输栈受压最大的路径(自研 wire 帧+zstd 并发搬运):
-		// 段 goroutine 挂到 GoSafe 下收编 panic。panic 与段错误同待遇转入
+		// 段 goroutine 统一挂 startSegWorker——panic 与段错误同待遇转投
 		// errCh(否则 wg.Wait 后读不到错误,发送方假成功挂死在 hash/ack);
 		// 成功不投递——GoSafeWithErrChannel 成功也会发 nil,会被下方
 		// select 误判为失败并误删半成品,故此处只报错误。
-		async.GoSafe(func() {
-			defer func() {
-				if r := recover(); r != nil {
-					select {
-					case errCh <- fmt.Errorf("seg%d panic: %v", i, r):
-					default:
-					}
-					cancel()
-				}
-			}()
-			defer wg.Done()
-			if err := writeSegment(ctx, conns[i], f, start, end, opts); err != nil {
-				select {
-				case errCh <- fmt.Errorf("seg%d: %w", i, err):
-				default:
-				}
-				cancel()
-			}
+		startSegWorker(&wg, errCh, cancel, i, func() error {
+			return writeSegment(ctx, conns[i], f, start, end, opts)
 		})
 	}
 
@@ -861,26 +879,11 @@ func recvFileMulti(x *xport, f *os.File, out string, meta metaMsg, opts transfer
 
 	var wg sync.WaitGroup
 	for i := 0; i < streams; i++ {
-		wg.Add(1)
 		start, end := boundaries[i], boundaries[i+1]
 		// 同发送侧多流:panic 转段错误进 errCh,由调用方走"失败即清半成品"
 		// 路径;成功不投递(同 GoSafeWithErrChannel 的 nil 陷阱)。
-		async.GoSafe(func() {
-			defer func() {
-				if r := recover(); r != nil {
-					select {
-					case errCh <- fmt.Errorf("seg%d panic: %v", i, r):
-					default:
-					}
-				}
-			}()
-			defer wg.Done()
-			if err := recvSegment(conns[i], f, start, end, opts, &gotNow); err != nil {
-				select {
-				case errCh <- fmt.Errorf("seg%d: %w", i, err):
-				default:
-				}
-			}
+		startSegWorker(&wg, errCh, nil, i, func() error {
+			return recvSegment(conns[i], f, start, end, opts, &gotNow)
 		})
 	}
 	wg.Wait()
