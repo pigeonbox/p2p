@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -124,6 +125,15 @@ func send(args []string) {
 		}
 	}
 
+	// 终端人性化输出（TTY 限定;--json/管道不受影响,2026-10-16 易用性）。
+	// 必须先于 client.New:client 构造时捕获 slog.Default(),装晚了旧默认
+	// handler 经 log→slog 桥接双烤出一层「· INFO …」怪行。
+	if !jsonOut {
+		if h, _ := newUIHandler(os.Stderr); h != nil {
+			h.(*uiHandler).setDirection("send")
+			slog.SetDefault(slog.New(h))
+		}
+	}
 	c, err := client.New(*opt)
 	if err != nil {
 		failJSON(err)
@@ -156,10 +166,18 @@ func send(args []string) {
 	if _, err := c.Send(paths, code); err != nil {
 		failJSON(err)
 	}
+	clearUIProgress()
 	if jsonOut {
 		emitEvent("done", map[string]any{"kind": "send"})
 	} else {
 		fmt.Println("\n✓ 发送完成")
+	}
+}
+
+// clearUIProgress 收掉在屏进度行（✓/✗ 终态行要干净落行;非 TTY 无进度行,空操作）。
+func clearUIProgress() {
+	if h, ok := slog.Default().Handler().(*uiHandler); ok {
+		h.clear()
 	}
 }
 
@@ -249,12 +267,20 @@ func receive(args []string) {
 		opt.ChooseFiles = chooseInteractively
 	}
 
+	// 终端人性化输出（TTY 限定;--json/管道不受影响;先于 client.New,理由同 send）
+	if !jsonOut {
+		if h, _ := newUIHandler(os.Stderr); h != nil {
+			h.(*uiHandler).setDirection("recv")
+			slog.SetDefault(slog.New(h))
+		}
+	}
 	c, err := client.New(*opt)
 	if err != nil {
 		fail(err)
 	}
 	files, err := c.Receive(code, out)
 	if err != nil {
+		clearUIProgress()
 		if len(files) > 0 {
 			fmt.Fprintf(os.Stderr, "✗ 部分失败(已收 %d 个): %v\n", len(files), err)
 		}
@@ -264,6 +290,7 @@ func receive(args []string) {
 		}
 		fail(err)
 	}
+	clearUIProgress()
 	if jsonOut {
 		abs := make([]string, 0, len(files))
 		for _, f := range files {
