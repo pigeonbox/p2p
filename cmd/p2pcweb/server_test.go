@@ -5,9 +5,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
-	"mime/multipart"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -136,6 +136,19 @@ func TestShareDownloadRoundtrip(t *testing.T) {
 	var out struct{ ID, URL, Name string }
 	_ = json.Unmarshal(body, &out)
 
+	// 列表必须携带 name/url/expires(share 字段未导出曾致列表输出 [{}])
+	lreq, _ := http.NewRequest("GET", ts.URL+"/api/shares", nil)
+	lreq.Header.Set("X-P2PCWEB", "tk")
+	lr, err := http.DefaultClient.Do(lreq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lb := mustReadAll(lr.Body)
+	_ = lr.Body.Close()
+	if !strings.Contains(string(lb), `"name":"`) || !strings.Contains(string(lb), `"url":"/d/`) {
+		t.Fatalf("分享列表缺 name/url 字段: %s", lb)
+	}
+
 	// 下载(令牌在 query)
 	dl, err := http.Get(ts.URL + out.URL)
 	if err != nil {
@@ -166,4 +179,3 @@ func mustReadAll(rc io.Reader) []byte {
 	b, _ := io.ReadAll(rc)
 	return b
 }
-

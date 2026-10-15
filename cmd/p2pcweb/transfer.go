@@ -6,12 +6,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -23,20 +25,23 @@ var ErrBusy = errors.New("已有直传任务进行中，请等待完成或先取
 
 // 子进程结果标记行（父进程按行扫描）。
 const (
-	doneMarker  = "P2PCWEB-DONE"  // 后可跟接收落盘路径
-	errorMarker = "P2PCWEB-ERROR" // 后为错误信息
+	doneMarker     = "P2PCWEB-DONE"     // 后可跟接收落盘路径
+	errorMarker    = "P2PCWEB-ERROR"    // 后为错误信息
+	progressMarker = "P2PCWEB-PROGRESS" // 后为 got=/total= 字节进度（不走日志面）
 )
 
 // Event SSE 推送事件。
 type Event struct {
-	Type string `json:"type"`           // state | code | log | exit
-	Line string `json:"line,omitempty"` // log：日志行
-	Code string `json:"code,omitempty"` // code/state：直传口令
-	Busy bool   `json:"busy,omitempty"` // state：是否有传输进行中
-	Role string `json:"role,omitempty"` // state：send | recv
-	Exit int    `json:"exit,omitempty"` // exit：子进程退出码（0 成功）
-	Path string `json:"path,omitempty"` // exit：接收落盘路径
-	Err  string `json:"err,omitempty"`  // exit：失败原因
+	Type  string `json:"type"`           // state | code | progress | log | exit
+	Line  string `json:"line,omitempty"` // log：日志行
+	Code  string `json:"code,omitempty"` // code/state：直传口令
+	Busy  bool   `json:"busy,omitempty"` // state：是否有传输进行中
+	Role  string `json:"role,omitempty"` // state：send | recv
+	Exit  int    `json:"exit"`           // exit：子进程退出码（0=成功;勿加 omitempty,否则成功态被省略致前端误判失败）
+	Path  string `json:"path,omitempty"` // exit：接收落盘路径
+	Err   string `json:"err,omitempty"`  // exit：失败原因
+	Got   int64  `json:"got"`            // progress：已传字节
+	Total int64  `json:"total"`          // progress：总字节（0=未知,界面转圈）
 }
 
 // Manager 单会话传输管理器。
@@ -147,7 +152,8 @@ func (m *Manager) Cancel() bool {
 	return true
 }
 
-// pipe 子进程输出 → 日志事件；DONE 标记行单独记录（携带接收落盘路径）。
+// pipe 子进程输出 → 日志事件；标记行单独处理：DONE 记录接收落盘路径，
+// PROGRESS 转结构化进度事件（字节计数走事件通道,不进日志面刷屏）。
 func (m *Manager) pipe(r io.Reader) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -159,8 +165,36 @@ func (m *Manager) pipe(r io.Reader) {
 			m.mu.Unlock()
 			continue
 		}
+		if got, total, ok := parseProgressLine(line); ok {
+			m.broadcast(Event{Type: "progress", Got: got, Total: total})
+			continue
+		}
 		m.broadcast(Event{Type: "log", Line: line})
 	}
+}
+
+// parseProgressLine 解析子进程进度标记行「P2PCWEB-PROGRESS got=N total=M」。
+func parseProgressLine(line string) (got, total int64, ok bool) {
+	if !strings.HasPrefix(line, progressMarker) {
+		return 0, 0, false
+	}
+	for _, f := range strings.Fields(strings.TrimPrefix(line, progressMarker)) {
+		k, v, found := strings.Cut(f, "=")
+		if !found {
+			continue
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			continue
+		}
+		switch k {
+		case "got":
+			got, ok = n, true
+		case "total":
+			total = n
+		}
+	}
+	return got, total, ok
 }
 
 func (m *Manager) wait() {
@@ -188,11 +222,11 @@ func (m *Manager) wait() {
 	m.broadcast(Event{Type: "exit", Exit: exitCode, Path: path, Err: msg})
 }
 
-// runTransferChild 隐藏子模式：跑阻塞式 client，日志（slog）走 stdout 供父进程
-// 捕获，结尾输出 DONE/ERROR 标记行。返回进程退出码。
+// runTransferChild 隐藏子模式：跑阻塞式 client，日志经 prettyHandler 转
+// 人类可读行（去 time=/level= 噪音）供父进程捕获转发界面，进度走独立标记
+// 行，结尾输出 DONE/ERROR 标记行。返回进程退出码。
 func runTransferChild(o *options) int {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout,
-		&slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(&prettyHandler{w: os.Stdout}))
 	c, err := client.New(client.Options{Registry: o.registry, RelayAddr: o.relay, DisablePunch: o.noPunch})
 	if err != nil {
 		return childFail(err)
@@ -217,6 +251,55 @@ func runTransferChild(o *options) int {
 	}
 	return 0
 }
+
+// prettyHandler 子进程日志整形：普通记录输出「· 消息  k=v」，警告/错误加
+// ⚠/✗ 前缀；「传输进度」记录不进日志面，改写为进度标记行由父进程结构化
+// 消费（界面渲染进度条而非滚日志）。
+type prettyHandler struct {
+	w  io.Writer
+	mu sync.Mutex
+}
+
+func (h *prettyHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelInfo }
+
+func (h *prettyHandler) Handle(_ context.Context, r slog.Record) error {
+	var b strings.Builder
+	if r.Message == "传输进度" {
+		var got, total int64
+		r.Attrs(func(a slog.Attr) bool {
+			switch a.Key {
+			case "got":
+				got = a.Value.Int64()
+			case "total":
+				total = a.Value.Int64()
+			}
+			return true
+		})
+		fmt.Fprintf(&b, "%s got=%d total=%d\n", progressMarker, got, total)
+	} else {
+		switch {
+		case r.Level >= slog.LevelError:
+			b.WriteString("✗ ")
+		case r.Level >= slog.LevelWarn:
+			b.WriteString("⚠ ")
+		default:
+			b.WriteString("· ")
+		}
+		b.WriteString(r.Message)
+		r.Attrs(func(a slog.Attr) bool {
+			b.WriteString("  " + a.Key + "=" + a.Value.String())
+			return true
+		})
+		b.WriteByte('\n')
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, err := io.WriteString(h.w, b.String())
+	return err
+}
+
+func (h *prettyHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *prettyHandler) WithGroup(string) slog.Handler      { return h }
 
 func childFail(err error) int {
 	fmt.Printf("%s %v\n", errorMarker, err)

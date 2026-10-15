@@ -129,6 +129,26 @@ func (t *shareTable) list() []share {
 	return out
 }
 
+// shareJSON 列表输出形态。share 字段未导出(不直接序列化,曾致列表输出 [{}]
+// 界面整行空白);url 在此拼好(含一次性令牌),仅供持主令牌的本机界面消费。
+type shareJSON struct {
+	ID      string    `json:"id"`
+	URL     string    `json:"url"`
+	Name    string    `json:"name"`
+	IsDir   bool      `json:"is_dir"`
+	Expires time.Time `json:"expires"`
+}
+
+func toShareJSON(s share) shareJSON {
+	return shareJSON{
+		ID:      s.id,
+		URL:     "/d/" + s.id + "?t=" + s.token,
+		Name:    s.name,
+		IsDir:   s.isDir,
+		Expires: s.expires,
+	}
+}
+
 func newToken() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -235,6 +255,7 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 		"registry":   cfg.Registry,
 		"out_dir":    s.outDir,
 		"version":    version.Version,
+		"max_upload": s.maxUpload,
 	})
 }
 
@@ -501,7 +522,12 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleShareList(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"shares": s.shares.list()})
+	items := s.shares.list()
+	out := make([]shareJSON, 0, len(items))
+	for _, sh := range items {
+		out = append(out, toShareJSON(sh))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"shares": out})
 }
 
 func (s *Server) handleShareCancel(w http.ResponseWriter, r *http.Request) {

@@ -128,10 +128,11 @@ func waitForAnnounce(t *testing.T, base, code string) {
 // ---- e2e 用例 ----
 
 // TestWebSendToClientRecv 网页上传 → 子模式发送 → client 库按口令接收。
+// 载荷 2MB:跨过 1MB 进度粒度,顺带断言子进程进度标记 → 结构化 progress 事件。
 func TestWebSendToClientRecv(t *testing.T) {
 	f := newP2PFixture(t)
 
-	payload := make([]byte, 256<<10)
+	payload := make([]byte, 2<<20)
 	if _, err := rand.Read(payload); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,7 @@ func TestWebSendToClientRecv(t *testing.T) {
 	s := &Server{
 		token:     "tk",
 		loopback:  true,
-		maxUpload: 1 << 20,
+		maxUpload: 8 << 20,
 		outDir:    t.TempDir(),
 		// 确定性走 fixture 中继(禁打洞):CI runner 上 loopback UDP 打洞不可靠,
 		// 且与 internal/client 的打洞用例并行时互相争抢资源——同 TestSendRecvForcedRelay 模式
@@ -214,14 +215,23 @@ func TestWebSendToClientRecv(t *testing.T) {
 		t.Fatalf("内容不一致: %d vs %d 字节", len(got), len(payload))
 	}
 
-	// 发送侧子进程应正常退出
+	// 发送侧子进程应正常退出;途中应至少一条结构化进度事件(2MB > 1MB 粒度)
+	sawProgress := false
 	deadline := time.After(30 * time.Second)
 	for {
 		select {
 		case ev := <-events:
-			if ev.Type == "exit" {
+			switch ev.Type {
+			case "progress":
+				if ev.Total >= int64(len(payload)) && ev.Got > 0 {
+					sawProgress = true
+				}
+			case "exit":
 				if ev.Exit != 0 {
 					t.Fatalf("发送侧退出码 %d（err=%s）", ev.Exit, ev.Err)
+				}
+				if !sawProgress {
+					t.Fatal("全程未收到结构化进度事件")
 				}
 				return
 			}

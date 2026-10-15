@@ -4,109 +4,308 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PigeonBox 直传</title>
+  <link rel="icon" type="image/png" href="data:image/png;base64,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" />
   <style>
-    :root { color-scheme: light dark; }
-    * { box-sizing: border-box; margin: 0; }
-    body {
-      min-height: 100vh; display: flex; align-items: center; justify-content: center;
-      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-      background: linear-gradient(160deg, #eef1ff, #f7f8fa);
-      padding: 24px 12px;
+    :root {
+      color-scheme: light dark;
+      --pri: #5e6ad2; --pri-h: #7b85da; --pri-a: #424a93; --pri-bg: #eff0fb;
+      --bg1: #eef1ff; --bg2: #f7f8fa; --card: #ffffff;
+      --text: #24262e; --muted: #7a7f8e; --faint: #9aa0b0;
+      --border: #dfe2ec; --log-bg: #f4f5f9;
+      --ok: #1a9c5c; --err: #d64545;
     }
     @media (prefers-color-scheme: dark) {
-      body { background: linear-gradient(160deg, #16181d, #0f1013); }
-      .card { background: #1d2026 !important; }
-      h1 { color: #e8eaf0 !important; }
-      .hint, .tip { color: #8a8f9c !important; }
-      .log { background: #14161a !important; }
-      input { background: #14161a; border-color: #33363f !important; color: #e8eaf0; }
-      .code { color: #8f94ff !important; }
-      .sec-title { color: #cfd3e0 !important; }
+      :root {
+        --bg1: #16181d; --bg2: #0f1013; --card: #1d2026;
+        --text: #e8eaf0; --muted: #8a8f9c; --faint: #6b7080;
+        --border: #33363f; --log-bg: #14161a; --pri-bg: #272b45;
+      }
     }
+    * { box-sizing: border-box; margin: 0; }
+    body {
+      min-height: 100vh; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      background: linear-gradient(160deg, var(--bg1), var(--bg2)); color: var(--text);
+      padding: 28px 12px 20px;
+    }
+    .wrap { width: 560px; max-width: 96vw; margin: 0 auto; }
+    .hide { display: none !important; }
+    .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+    /* ── 品牌头 ── */
+    .brand { display: flex; align-items: center; margin-bottom: 14px; }
+    .brand > * + * { margin-left: 12px; }
+    .brand img { width: 44px; height: 44px; border-radius: 11px; display: block; }
+    .brand h1 { font-size: 19px; font-weight: 700; }
+    .brand .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .brand .ver { opacity: .75; }
+
+    /* ── 标签页 ── */
+    .tabs { display: flex; margin-bottom: -1px; }
+    .tabs > * + * { margin-left: 6px; }
+    .tab {
+      padding: 9px 16px 10px; border: 1px solid transparent; border-bottom: 0; border-radius: 10px 10px 0 0;
+      background: transparent; color: var(--muted); font-size: 14px; cursor: pointer; position: relative;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.on { background: var(--card); border-color: var(--border); color: var(--text); font-weight: 600; }
+    .bdg {
+      display: none; position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; border-radius: 50%;
+      background: var(--pri); animation: pulse 1.4s ease-in-out infinite;
+    }
+    .bdg.show { display: block; }
     .card {
-      width: 500px; max-width: 96vw; padding: 34px 34px 26px; border-radius: 16px; background: #fff;
-      box-shadow: 0 12px 40px rgba(30, 40, 90, 0.12); text-align: center;
+      background: var(--card); border: 1px solid var(--border); border-radius: 0 14px 14px 14px;
+      padding: 20px 22px 18px; box-shadow: 0 10px 34px rgba(30, 40, 90, 0.10);
     }
-    .logo { width: 60px; height: 60px; border-radius: 14px; margin: 0 auto 12px; background: #5b5fe8;
-            display: flex; align-items: center; justify-content: center; }
-    .logo span { color: #fff; font-size: 28px; font-weight: 700; }
-    h1 { font-size: 20px; color: #222; margin-bottom: 4px; }
-    .hint { color: #888; font-size: 13px; margin-bottom: 16px; }
-    .hint .ver { opacity: .75; }
+    @media (max-width: 520px) {
+      .tabs > * { flex: 1; padding: 9px 6px 10px; text-align: center; }
+      .card { border-radius: 14px; padding: 16px 14px; }
+    }
+
+    /* ── 发送/接收分段 ── */
+    .seg { display: flex; background: var(--pri-bg); border-radius: 9px; padding: 3px; margin-bottom: 16px; }
+    .seg > * { flex: 1; border: 0; background: transparent; color: var(--muted); font-size: 14px; padding: 8px 0; border-radius: 7px; cursor: pointer; }
+    .seg > *.on { background: var(--card); color: var(--pri); font-weight: 600; box-shadow: 0 1px 4px rgba(20,30,80,.12); }
+
+    /* ── 拖放区 ── */
+    .drop {
+      border: 1.5px dashed var(--border); border-radius: 12px; padding: 26px 16px 22px; text-align: center;
+      cursor: pointer; transition: border-color .15s, background .15s; outline: none;
+    }
+    .drop:hover, .drop:focus, .drop.over { border-color: var(--pri); background: var(--pri-bg); }
+    .drop-ic {
+      width: 40px; height: 40px; margin: 0 auto 10px; border-radius: 50%; background: var(--pri-bg);
+      color: var(--pri); font-size: 20px; line-height: 40px; text-align: center; font-weight: 700;
+    }
+    .drop-t { font-size: 14px; font-weight: 600; }
+    .drop-s { font-size: 12px; color: var(--muted); margin-top: 5px; }
+
+    .hrow { display: flex; align-items: center; }
+    .hrow > * + * { margin-left: 10px; }
+    .grow { flex: 1; min-width: 0; }
+
     input {
-      width: 100%; padding: 10px 13px; border: 1px solid #d8dbe4; border-radius: 8px;
-      font-size: 14px; outline: none; margin-bottom: 10px;
+      width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+      font-size: 14px; outline: none; background: transparent; color: var(--text);
     }
-    input:focus { border-color: #5b5fe8; }
-    button {
-      padding: 10px 14px; border: 0; border-radius: 8px; background: #5b5fe8;
-      color: #fff; font-size: 14px; cursor: pointer;
+    input:focus { border-color: var(--pri); }
+    input::placeholder { color: var(--faint); }
+    .code-in { font-family: ui-monospace, Menlo, Consolas, monospace; letter-spacing: 2px; text-transform: uppercase; }
+
+    .btn {
+      padding: 10px 16px; border: 0; border-radius: 8px; background: var(--pri); color: #fff;
+      font-size: 14px; cursor: pointer; white-space: nowrap;
     }
-    button:disabled { opacity: 0.55; cursor: default; }
-    button.ghost { background: transparent; border: 1px solid #c9cdda; color: inherit; }
-    .row { display: flex; gap: 10px; }
-    .row > button { flex: 1; }
-    .divider { margin: 20px 0 14px; border: 0; border-top: 1px dashed #d8dbe4; }
-    .sec-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: inherit; text-align: left; }
-    .code {
-      display: none; font-size: 24px; letter-spacing: 4px; font-weight: 700;
-      color: #4448d8; margin: 10px 0 2px; user-select: all;
+    .btn:hover { background: var(--pri-h); }
+    .btn:active { background: var(--pri-a); }
+    .btn:disabled { opacity: .55; cursor: default; }
+    .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    .btn.ghost:hover { border-color: var(--pri); color: var(--pri); background: transparent; }
+    .btn.danger { background: transparent; border: 1px solid var(--err); color: var(--err); }
+    .btn.sm { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+
+    /* ── 传输实时区 ── */
+    .live-head { display: flex; align-items: center; margin-bottom: 4px; }
+    .live-head > * + * { margin-left: 8px; }
+    .pill {
+      display: inline-flex; align-items: center; font-size: 13px; font-weight: 600;
+      padding: 5px 12px; border-radius: 999px; background: var(--pri-bg); color: var(--pri);
     }
-    .code.ok { color: #1a9c5c !important; }
+    .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pri); margin-right: 7px; animation: pulse 1.4s ease-in-out infinite; }
+    .pill.ok { background: rgba(26,156,92,.12); color: var(--ok); }
+    .pill.ok .dot { background: var(--ok); animation: none; }
+    .pill.bad { background: rgba(214,69,69,.12); color: var(--err); }
+    .pill.bad .dot { background: var(--err); animation: none; }
+    .pill.off { background: var(--log-bg); color: var(--muted); }
+    .pill.off .dot { background: var(--muted); animation: none; }
+    .chip {
+      font-size: 11px; color: var(--muted); border: 1px solid var(--border);
+      padding: 3px 9px; border-radius: 999px;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+    .code-big {
+      display: flex; align-items: center; justify-content: center; margin: 14px 0 2px;
+    }
+    .code-big > * + * { margin-left: 12px; }
+    .code-big span {
+      font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 27px; font-weight: 700;
+      letter-spacing: 2px; color: var(--pri); user-select: all;
+    }
+    .mini { font-size: 12px; color: var(--muted); line-height: 1.7; }
+    .center { text-align: center; }
+
+    .bar { height: 8px; border-radius: 999px; background: var(--log-bg); overflow: hidden; margin: 12px 0 6px; }
+    .bar .fill {
+      height: 100%; width: 0; border-radius: 999px; background: linear-gradient(90deg, var(--pri), var(--pri-h));
+      transition: width .25s ease;
+    }
+    .bar.indet .fill {
+      width: 36%; animation: slide 1.1s ease-in-out infinite alternate;
+    }
+    @keyframes slide { from { margin-left: 0; } to { margin-left: 64%; } }
+    .bar .fill.ok { background: var(--ok); }
+    .meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); min-height: 18px; }
+    .meta .mono { font-size: 11px; }
+    .live-btns { display: flex; justify-content: center; margin-top: 14px; }
+    .live-btns > * + * { margin-left: 10px; }
+
+    details.logbox { margin-top: 14px; }
+    details.logbox summary {
+      font-size: 12px; color: var(--muted); cursor: pointer; user-select: none; outline: none;
+    }
+    details.logbox summary:hover { color: var(--pri); }
     .log {
-      display: none; text-align: left; margin-top: 10px; padding: 10px 12px;
-      background: #f4f5f9; border-radius: 8px; font: 11px/1.55 ui-monospace, Menlo, Consolas, monospace;
-      max-height: 170px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
-      color: #555;
+      margin-top: 8px; padding: 10px 12px; background: var(--log-bg); border-radius: 8px;
+      font: 11px/1.6 ui-monospace, Menlo, Consolas, monospace; max-height: 180px; overflow-y: auto;
+      white-space: pre-wrap; word-break: break-all; color: var(--muted); text-align: left;
     }
-    .err { color: #d33; font-size: 13px; min-height: 18px; margin-top: 8px; }
-    .tip { margin-top: 12px; font-size: 12px; color: #aab; line-height: 1.7; text-align: left; }
+    .err { color: var(--err); font-size: 13px; min-height: 18px; margin-top: 8px; }
+
+    details.settings { margin-top: 16px; border-top: 1px dashed var(--border); padding-top: 12px; }
+    details.settings summary { font-size: 12px; color: var(--muted); cursor: pointer; outline: none; user-select: none; }
+    details.settings summary:hover { color: var(--pri); }
+    .set-row { display: flex; align-items: center; margin-top: 10px; }
+    .set-row > * + * { margin-left: 8px; }
+    .st { font-size: 12px; color: var(--ok); white-space: nowrap; opacity: 0; transition: opacity .2s; }
+    .st.show { opacity: 1; }
+
+    /* ── 分享列表 ── */
+    .up-line { margin-top: 12px; }
+    .bar.sm { height: 6px; margin: 0 0 4px; }
+    .sec-hint { font-size: 13px; color: var(--muted); margin-bottom: 12px; line-height: 1.7; }
+    .drop.sm { padding: 18px 14px 16px; }
+    .drop.sm .drop-ic { width: 34px; height: 34px; line-height: 34px; font-size: 17px; margin-bottom: 6px; }
+    .share-item {
+      display: flex; align-items: center; padding: 9px 2px; border-bottom: 1px dashed var(--border); font-size: 13px;
+    }
+    .share-item:last-child { border-bottom: 0; }
+    .share-item > * + * { margin-left: 8px; }
+    .share-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .share-name a { color: var(--text); text-decoration: none; }
+    .share-name a:hover { color: var(--pri); }
+    .share-ttl { font-size: 11px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
+    .share-ttl.hot { color: var(--err); }
+    .share-empty { text-align: center; color: var(--faint); font-size: 12px; padding: 14px 0 6px; }
+
+    .foot { text-align: center; font-size: 12px; color: var(--faint); margin-top: 14px; }
+    .foot .mono { color: var(--muted); }
+
+    #toast {
+      position: fixed; left: 50%; bottom: 34px; transform: translateX(-50%);
+      background: var(--text); color: var(--card); font-size: 13px; padding: 9px 18px;
+      border-radius: 999px; box-shadow: 0 6px 22px rgba(0,0,0,.22); opacity: 0; transition: opacity .2s;
+      pointer-events: none; z-index: 9; max-width: 80vw;
+    }
+    #toast.show { opacity: 1; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="logo"><span>柜</span></div>
-    <h1>PigeonBox 直传</h1>
-    <p class="hint">网页模式 · <span class="ver" id="ver"></span></p>
+  <div class="wrap">
+    <header class="brand">
+      <img src="data:image/png;base64,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" alt="PigeonBox" />
+      <div>
+        <h1>PigeonBox 直传</h1>
+        <p class="sub">网页模式 <span class="ver" id="ver"></span> · 设备间端到端加密，服务端只见密文</p>
+      </div>
+    </header>
 
-    <div class="sec-title">文件柜</div>
-    <input id="url" placeholder="服务器地址，如 http://10.44.129.215" />
-    <div class="row">
-      <button class="ghost" id="save-cab">保存</button>
-      <button id="open-cab">打开文件柜（浏览器新标签）</button>
-    </div>
-    <div class="err" id="cab-err"></div>
+    <nav class="tabs" role="tablist">
+      <button class="tab on" data-tab="p2p" role="tab">设备直传<span class="bdg" id="bdg-p2p"></span></button>
+      <button class="tab" data-tab="share" role="tab">浏览器直下</button>
+      <button class="tab" data-tab="cab" role="tab">文件柜</button>
+    </nav>
 
-    <hr class="divider" />
-    <div class="sec-title">浏览器直下（链接发给同网的人，浏览器打开即下载，15 分钟有效）</div>
-    <div class="row">
-      <button class="ghost" id="pick-share">选择文件生成链接…</button>
-      <button class="ghost" id="refresh-shares">刷新列表</button>
-    </div>
-    <div class="err" id="share-err"></div>
-    <div id="share-list" style="text-align:left; font-size:12px; margin-top:6px; line-height:1.8;"></div>
-    <input type="file" id="file-share" multiple style="display:none" />
+    <section class="card">
+      <!-- ══════ 设备直传 ══════ -->
+      <div id="tab-p2p" class="pane">
+        <div class="seg" id="mode-seg">
+          <button class="on" data-mode="send">我要发送</button>
+          <button data-mode="recv">我要接收</button>
+        </div>
 
-    <hr class="divider" />
-    <div class="sec-title">设备直传（P2P，经中继/打洞，服务端只见密文）</div>
+        <div id="pane-send">
+          <div class="drop" id="drop-send" tabindex="0" role="button" aria-label="选择要发送的文件">
+            <div class="drop-ic">⇧</div>
+            <div class="drop-t">拖文件到这里，或点击选择</div>
+            <div class="drop-s" id="drop-limit">支持多文件 · 单文件上限 --</div>
+          </div>
+        </div>
 
-    <input id="registry" placeholder="直传注册中心地址，如 http://p2p.example.com:12346" />
+        <div id="pane-recv" class="hide">
+          <div class="hrow">
+            <input id="p2p-code" class="code-in grow" placeholder="粘贴对方口令，如 7K2M-9XQW-AABB" autocomplete="off" spellcheck="false" />
+            <button id="recv" class="btn">开始接收</button>
+          </div>
+          <p class="mini" style="margin: 9px 2px 0;">口令由发送方提供；文件将保存到下载目录，全程端到端加密。</p>
+        </div>
 
-    <div class="row" style="margin-bottom: 10px;">
-      <button class="ghost" id="pick">选择文件发送…</button>
-      <button class="ghost" id="recv">按口令接收</button>
-    </div>
-    <input id="p2p-code" placeholder="输入对方口令接收（存到系统下载目录）" />
-    <div class="code" id="p2p-mycode"></div>
-    <pre class="log" id="p2p-log"></pre>
-    <div class="row" style="margin-top: 10px;">
-      <button id="cancel" style="display:none">取消传输</button>
-    </div>
-    <div class="err" id="p2p-err"></div>
-    <p class="tip" id="p2p-note">发送先取文件到本机临时目录再开始直传；需要可达的 p2pd 注册中心。接收落盘：<span id="out-dir"></span></p>
+        <div id="live" class="hide" aria-live="polite">
+          <div class="live-head">
+            <span class="pill" id="pill"><span class="dot"></span><span id="pill-t">准备中</span></span>
+            <span class="chip hide" id="via-chip"></span>
+          </div>
+          <div class="code-big hide" id="code-big">
+            <span id="mycode">------</span>
+            <button class="btn sm ghost" id="copy-code">复制口令</button>
+          </div>
+          <p class="mini center" id="live-hint" style="margin-top: 8px;"></p>
+          <div class="bar" id="bar"><div class="fill" id="fill"></div></div>
+          <div class="meta"><span class="mono" id="meta-l"></span><span class="mono" id="meta-r"></span></div>
+          <div class="live-btns">
+            <button id="cancel" class="btn danger">取消传输</button>
+            <button id="again" class="btn hide">再传一次</button>
+          </div>
+          <div class="err" id="p2p-err"></div>
+          <details class="logbox" id="logbox">
+            <summary>传输日志</summary>
+            <pre class="log" id="p2p-log"></pre>
+          </details>
+        </div>
+
+        <details class="settings">
+          <summary>连接设置 · 直传注册中心</summary>
+          <div class="set-row">
+            <input id="registry" class="grow" placeholder="如 http://p2p.example.com:12346" spellcheck="false" />
+            <span class="st" id="save-st">已保存 ✓</span>
+          </div>
+          <p class="mini" style="margin: 7px 2px 0;">收发双方须连到同一注册中心；修改后自动保存到本机。</p>
+        </details>
+      </div>
+
+      <!-- ══════ 浏览器直下 ══════ -->
+      <div id="tab-share" class="pane hide">
+        <div class="drop sm" id="drop-share" tabindex="0" role="button" aria-label="选择要生成链接的文件">
+          <div class="drop-ic">⇗</div>
+          <div class="drop-t">选择文件，生成可直接下载的链接</div>
+          <div class="drop-s">对方用浏览器打开链接即下载 · 链接 15 分钟有效 · 至多 4 条在席</div>
+        </div>
+        <div class="up-line hide" id="share-up">
+          <div class="bar sm" id="share-bar"><div class="fill" id="share-fill"></div></div>
+          <div class="meta"><span class="mono" id="share-meta"></span><span></span></div>
+        </div>
+        <div class="err" id="share-err"></div>
+        <div id="share-list"></div>
+      </div>
+
+      <!-- ══════ 文件柜 ══════ -->
+      <div id="tab-cab" class="pane hide">
+        <p class="sec-hint">一键打开你的 PigeonBox 文件柜 —— 网页版匿名口令收发件，适合发给不在同一网络的人。</p>
+        <div class="hrow">
+          <input id="url" class="grow" placeholder="服务器地址，如 http://10.44.129.215" spellcheck="false" />
+          <button id="open-cab" class="btn">打开文件柜</button>
+        </div>
+        <div class="err" id="cab-err"></div>
+        <p class="mini" style="margin: 8px 2px 0;">地址修改后自动保存到本机。</p>
+      </div>
+    </section>
+
+    <footer class="foot">接收保存到 <span id="out-dir" class="mono"></span></footer>
   </div>
 
+  <div id="toast"></div>
   <input type="file" id="file" multiple style="display:none" />
+  <input type="file" id="file-share" multiple style="display:none" />
 
   <script>
     // 令牌治理：入口 URL 的 ?t= 只在首屏出现一次——读入 sessionStorage 后
@@ -140,6 +339,79 @@
       if (/^https?:\/\//.test(t)) return t;
       return 'http://' + t;
     }
+    function fmtBytes(n) {
+      if (!n || n < 0) return '0 B';
+      const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+      return (i === 0 ? n : n.toFixed(1)) + ' ' + u[i];
+    }
+    function fmtDur(s) {
+      s = Math.max(1, Math.round(s));
+      if (s < 60) return s + 's';
+      return Math.floor(s / 60) + 'm' + (s % 60) + 's';
+    }
+
+    // ── 全局状态机 ──
+    // idle → uploading → waiting → paired → transferring → done | failed | cancelled
+    let phase = 'idle';
+    let role = null;          // send | recv
+    let curCode = '';
+    let xhrUp = null;         // 进行中的本机上传（可取消）
+    let samples = [];         // [{t, got}] 速度采样
+    let lastTotal = 0;
+
+    const ACTIVE = { uploading: 1, waiting: 1, paired: 1, transferring: 1 };
+    function active() { return !!ACTIVE[phase]; }
+
+    function toast(msg) {
+      const t = $('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      clearTimeout(toast._h);
+      toast._h = setTimeout(() => t.classList.remove('show'), 1800);
+    }
+
+    function copyText(text, okMsg) {
+      const done = () => toast(okMsg || '已复制');
+      const fallback = () => {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) { toast('复制失败，请手动选择'); }
+        document.body.removeChild(ta);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, fallback);
+      } else { fallback(); }
+    }
+
+    $('copy-code').onclick = () => copyText(curCode, '口令已复制，发给对方吧');
+
+    // ── 标签页 / 分段 ──
+    let curTab = 'p2p';
+    document.querySelectorAll('.tab').forEach(b => {
+      b.onclick = () => switchTab(b.dataset.tab);
+    });
+    function switchTab(name) {
+      curTab = name;
+      document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+      for (const n of ['p2p', 'share', 'cab']) {
+        $('tab-' + n).classList.toggle('hide', n !== name);
+      }
+      if (name === 'share') refreshShares();
+    }
+    document.querySelectorAll('#mode-seg button').forEach(b => {
+      b.onclick = () => switchMode(b.dataset.mode);
+    });
+    function switchMode(m) {
+      if (active()) return;
+      document.querySelectorAll('#mode-seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+      $('pane-send').classList.toggle('hide', m !== 'send');
+      $('pane-recv').classList.toggle('hide', m !== 'recv');
+    }
 
     // ── 初始化 ──
     let st = {};
@@ -149,7 +421,13 @@
       $('registry').value = st.registry || '';
       $('out-dir').textContent = st.out_dir || '';
       $('ver').textContent = 'v' + (st.version || '?');
-      if (st.busy) setBusy(true, st.code);
+      if (st.max_upload) $('drop-limit').textContent = '支持多文件 · 单文件上限 ' + fmtBytes(st.max_upload);
+      if (st.busy) {
+        role = st.role === 'recv' ? 'recv' : 'send';
+        enterLive();
+        setPhase('waiting');
+        if (st.code) showCode(st.code);
+      }
       sse();
     })().catch(e => { $('p2p-err').textContent = '初始化失败: ' + e.message; });
 
@@ -179,160 +457,450 @@
     }
 
     function onEvent(p) {
-      if (p.type === 'code') { showCode(p.code); setBusy(true, p.code); }
-      else if (p.type === 'log') { appendLog(p.line); }
-      else if (p.type === 'exit') { finish(p); }
-      else if (p.type === 'state') { if (!p.busy && busy) setBusy(false); }
+      if (p.type === 'code') { enterLive(); showCode(p.code); setPhase('waiting'); }
+      else if (p.type === 'progress') onProgress(p.got, p.total);
+      else if (p.type === 'log') { appendLog(p.line); deriveStage(p.line); }
+      else if (p.type === 'exit') finish(p);
+      else if (p.type === 'state') { if (!p.busy && active()) resetAll(); }
     }
 
-    // ── 文件柜 ──
-    $('save-cab').onclick = async () => {
-      $('cab-err').textContent = '';
-      try {
-        await postJSON('config', { server_url: $('url').value, registry: $('registry').value });
-        $('cab-err').style.color = '#1a9c5c';
-        $('cab-err').textContent = '已保存';
-        setTimeout(() => { $('cab-err').textContent = ''; $('cab-err').style.color = ''; }, 1500);
-      } catch (e) { $('cab-err').textContent = String(e.message || e); }
-    };
-    $('open-cab').onclick = () => {
-      const u = normalizeURL($('url').value);
-      if (!u) { $('cab-err').textContent = '请先填写服务器地址'; return; }
-      window.open(u + '/', '_blank');
-    };
+    // 从日志行推导阶段（与 client 日志措辞同仓演进）。
+    function deriveStage(line) {
+      if (!active() || phase === 'uploading') return;
+      if (line.indexOf('对端已接入') >= 0 || line.indexOf('已配对且身份核对通过') >= 0) {
+        setPhase('paired');
+      } else if (line.indexOf('传输通道建立') >= 0) {
+        setPhase('transferring');
+        setVia(line.indexOf('direct') >= 0 ? 'P2P 直连' : '经中继');
+      } else if (line.indexOf('直连升级就绪') >= 0) {
+        setVia('已升级直连');
+      }
+    }
+    function setVia(t) {
+      const c = $('via-chip');
+      c.textContent = t;
+      c.classList.remove('hide');
+    }
 
-    // ── 设备直传 ──
-    let busy = false;
+    // ── 实时区 UI ──
+    function enterLive() {
+      $('mode-seg').classList.add('hide');
+      $('pane-send').classList.add('hide');
+      $('pane-recv').classList.add('hide');
+      $('live').classList.remove('hide');
+      $('bdg-p2p').classList.add('show');
+    }
 
-    $('pick').onclick = () => $('file').click();
-    $('file').onchange = async () => {
-      const files = Array.from($('file').files);
-      $('file').value = '';
+    const PILL = {
+      uploading:   ['正在准备文件', 'run'],
+      waiting:     ['等待对方接入', 'run'],
+      paired:      ['已配对 · 建立加密通道', 'run'],
+      transferring:['正在传输', 'run'],
+      done:        ['✓ 传输完成', 'ok'],
+      failed:      ['传输失败', 'bad'],
+      cancelled:   ['已取消', 'off']
+    };
+    function setPhase(p) {
+      phase = p;
+      const conf = PILL[p] || ['', 'run'];
+      $('pill-t').textContent = conf[0];
+      const pill = $('pill');
+      pill.classList.remove('ok', 'bad', 'off');
+      if (conf[1] !== 'run') pill.classList.add(conf[1]);
+
+      const hints = {
+        uploading: '正在把文件读入本机服务…',
+        waiting: role === 'send' ? '把口令发给对方（微信 / 邮件均可），对方在「我要接收」里粘贴即可'
+                                 : '已就绪，等待对方开始发送…',
+        paired: '加密通道协商中…',
+        transferring: '',
+        done: role === 'recv' ? '文件已保存到下载目录' : '文件已送达对方设备',
+        failed: '可展开下方传输日志查看细节',
+        cancelled: ''
+      };
+      $('live-hint').textContent = hints[p] || '';
+      $('live-hint').style.display = (hints[p] || '') === '' ? 'none' : 'block';
+
+      // 口令只在等待期大字展示,进入通道后收起降噪
+      $('code-big').classList.toggle('hide', !(p === 'waiting' && curCode && role === 'send'));
+
+      const bar = $('bar'), fill = $('fill');
+      bar.classList.remove('indet');
+      fill.classList.remove('ok');
+      fill.style.width = '0';
+      $('meta-l').textContent = '';
+      $('meta-r').textContent = '';
+      if (p === 'uploading' || p === 'waiting') bar.classList.add('indet');
+      if (p === 'done') { fill.style.width = '100%'; fill.classList.add('ok'); }
+
+      $('cancel').classList.toggle('hide', !active());
+      $('again').classList.toggle('hide', !(p === 'done' || p === 'failed' || p === 'cancelled'));
+      $('bdg-p2p').classList.toggle('show', !!active());
+    }
+
+    function showCode(code) {
+      curCode = code;
+      $('mycode').textContent = code;
+      if (phase === 'waiting' && role === 'send') $('code-big').classList.remove('hide');
+    }
+
+    function appendLog(line) {
+      const log = $('p2p-log');
+      log.textContent += line + '\n';
+      log.scrollTop = log.scrollHeight;
+    }
+
+    // ── 进度渲染 ──
+    function onProgress(got, total) {
+      if (phase === 'done' || phase === 'failed' || phase === 'cancelled' || phase === 'uploading') return;
+      if (phase !== 'transferring') setPhase('transferring');
+      const now = Date.now();
+      if (total > 0) lastTotal = total;
+      samples.push({ t: now, got: got });
+      if (samples.length > 40) samples.shift();
+
+      const bar = $('bar'), fill = $('fill');
+      if (lastTotal > 0) {
+        bar.classList.remove('indet');
+        const pct = Math.min(100, got / lastTotal * 100);
+        fill.style.width = (pct >= 100 ? 100 : pct).toFixed(1) + '%';
+        $('meta-l').textContent = fmtBytes(got) + ' / ' + fmtBytes(lastTotal) + ' · ' + pct.toFixed(0) + '%';
+      } else {
+        bar.classList.add('indet');
+        $('meta-l').textContent = '已传 ' + fmtBytes(got);
+      }
+      // 速度:取约 2.5s 前的采样求差
+      let speed = 0;
+      for (let i = samples.length - 1; i >= 0; i--) {
+        if (now - samples[i].t >= 2500 || i === 0) {
+          const dt = (now - samples[i].t) / 1000;
+          if (dt > 0.3) speed = (got - samples[i].got) / dt;
+          break;
+        }
+      }
+      if (speed > 0) {
+        let r = '≈ ' + fmtBytes(speed) + '/s';
+        if (lastTotal > got) r += ' · 剩 ' + fmtDur((lastTotal - got) / speed);
+        $('meta-r').textContent = r;
+      }
+    }
+
+    function resetAll() {
+      phase = 'idle'; role = null; curCode = ''; lastTotal = 0;
+      samples = [];
+      if (xhrUp) { try { xhrUp.abort(); } catch (e) {} xhrUp = null; }
+      $('live').classList.add('hide');
+      $('p2p-log').textContent = '';
+      $('p2p-err').textContent = '';
+      $('via-chip').classList.add('hide');
+      $('logbox').open = false;
+      $('bdg-p2p').classList.remove('show');
+      $('mode-seg').classList.remove('hide');
+      const m = document.querySelector('#mode-seg button.on');
+      switchMode(m ? m.dataset.mode : 'send');
+    }
+
+    // ── 拖放区 ──
+    function bindDrop(el, kind, onPick, busyGate) {
+      el.onclick = () => {
+        if (busyGate()) return;
+        onPick();
+      };
+      el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.onclick(); } };
+      el.ondragover = e => { e.preventDefault(); el.classList.add('over'); };
+      el.ondragleave = () => el.classList.remove('over');
+      el.ondrop = e => {
+        e.preventDefault();
+        el.classList.remove('over');
+        if (busyGate()) return;
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+          pickTarget = kind;
+          handleFiles(e.dataTransfer.files);
+        }
+      };
+    }
+    let pickTarget = null; // 'send' | 'share'
+    bindDrop($('drop-send'), 'send', () => { pickTarget = 'send'; $('file').click(); },
+      () => { if (active()) { toast('已有直传任务进行中，请等它完成或先取消'); return true; } return false; });
+    bindDrop($('drop-share'), 'share', () => { pickTarget = 'share'; $('file-share').click(); }, shareUploading);
+    $('file').onchange = () => { pickTarget = 'send'; handleFiles($('file').files); $('file').value = ''; };
+    $('file-share').onchange = () => { pickTarget = 'share'; handleFiles($('file-share').files); $('file-share').value = ''; };
+
+    function handleFiles(fileList) {
+      const files = Array.from(fileList);
       if (!files.length) return;
-      resetP2p();
-      const registry = $('registry').value.trim();
-      if (!registry) { $('p2p-err').textContent = '请填写直传注册中心地址'; return; }
+      if (pickTarget === 'share') uploadShare(files);
+      else startSend(files);
+    }
+
+    // ── 发送流 ──
+    function regRequired() {
+      const reg = $('registry').value.trim();
+      if (reg) return reg;
+      document.querySelector('details.settings').open = true;
+      $('registry').focus();
+      toast('请先填写直传注册中心地址');
+      return '';
+    }
+
+    function startSend(files) {
+      if (active()) return;
+      const registry = regRequired();
+      if (!registry) return;
+      resetLiveKeepPane();
+      role = 'send';
+      enterLive();
+      setPhase('uploading');
+
+      const label = files.length === 1 ? files[0].name : files.length + ' 个文件';
+      $('meta-l').textContent = label;
+
       const fd = new FormData();
       for (const f of files) fd.append('file', f, f.name);
-      const label = files.length === 1 ? files[0].name : files.length + ' 个文件';
-      $('p2p-err').textContent = '正在取文件到本机（' + label + '）…';
-      try {
-        const r = await fetch(api('send?registry=' + encodeURIComponent(registry)), { method: 'POST', headers: auth(), body: fd });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
-        $('p2p-err').textContent = '';
-        showCode(data.code);
-        setBusy(true, data.code);
-      } catch (e) {
-        $('p2p-err').textContent = String(e.message || e);
-      }
-    };
+      const xhr = new XMLHttpRequest();
+      xhrUp = xhr;
+      xhr.open('POST', api('send?registry=' + encodeURIComponent(registry)));
+      xhr.setRequestHeader('X-P2PCWEB', T);
+      // 本机回环上传通常极快;大文件时给出读取进度
+      xhr.upload.onprogress = e => {
+        if (phase !== 'uploading') return;
+        if (e.lengthComputable && e.total > 0) {
+          $('bar').classList.remove('indet');
+          $('fill').style.width = (e.loaded / e.total * 100).toFixed(1) + '%';
+          $('meta-r').textContent = fmtBytes(e.loaded) + ' / ' + fmtBytes(e.total);
+        }
+      };
+      xhr.onload = () => {
+        xhrUp = null;
+        let data = {};
+        try { data = JSON.parse(xhr.responseText); } catch (e2) {}
+        if (xhr.status >= 200 && xhr.status < 300 && data.code) {
+          samples = []; lastTotal = 0;
+          showCode(data.code);
+          setPhase('waiting');
+        } else {
+          setPhase('failed');
+          $('p2p-err').textContent = data.error || ('HTTP ' + xhr.status);
+          $('logbox').open = true;
+        }
+      };
+      xhr.onerror = () => {
+        xhrUp = null;
+        setPhase('failed');
+        $('p2p-err').textContent = '上传到本机服务失败';
+      };
+      xhr.onabort = () => { xhrUp = null; };
+      xhr.send(fd);
+    }
 
+    function resetLiveKeepPane() {
+      $('p2p-log').textContent = '';
+      $('p2p-err').textContent = '';
+      $('via-chip').classList.add('hide');
+      $('logbox').open = false;
+      $('code-big').classList.add('hide');
+      samples = []; lastTotal = 0; curCode = '';
+    }
+
+    // ── 接收流 ──
+    $('p2p-code').addEventListener('input', function () {
+      this.value = this.value.toUpperCase().replace(/[^0-9A-Z-]/g, '').slice(0, 14);
+    });
+    $('p2p-code').addEventListener('keydown', e => { if (e.key === 'Enter') $('recv').click(); });
     $('recv').onclick = async () => {
-      resetP2p();
-      const code = $('p2p-code').value.trim();
-      const registry = $('registry').value.trim();
-      if (!code) { $('p2p-err').textContent = '请输入口令'; return; }
-      if (!registry) { $('p2p-err').textContent = '请填写直传注册中心地址'; return; }
+      if (active()) return;
+      const code = $('p2p-code').value.trim().toUpperCase();
+      if (!code) { toast('请输入对方给你的口令'); $('p2p-code').focus(); return; }
+      const registry = regRequired();
+      if (!registry) return;
+      resetLiveKeepPane();
+      role = 'recv';
+      enterLive();
       try {
-        await postJSON('recv', { code, registry });
-        setBusy(true, code);
-      } catch (e) { $('p2p-err').textContent = String(e.message || e); }
+        await postJSON('recv', { code: code, registry: registry });
+        curCode = code;
+        setPhase('waiting');
+      } catch (e) {
+        resetAll();
+        toast('接收失败: ' + (e.message || e));
+      }
     };
 
     $('cancel').onclick = async () => {
+      if (phase === 'uploading' && xhrUp) {
+        const x = xhrUp;
+        xhrUp = null;
+        x.abort();
+        resetAll();
+        toast('已取消');
+        return;
+      }
       try { await fetch(api('cancel'), { method: 'POST', headers: auth() }); } catch (_) {}
     };
 
+    $('again').onclick = () => resetAll();
+
+    function finish(p) {
+      if (!p.exit) {
+        setPhase('done');
+        if (role === 'recv') {
+          appendLog('✓ 已保存: ' + (p.path || ''));
+          $('live-hint').textContent = '已保存到 ' + (p.path || '下载目录');
+          $('live-hint').style.display = 'block';
+        }
+      } else if ((p.err || '').indexOf('kill') >= 0) {
+        setPhase('cancelled');
+      } else {
+        setPhase('failed');
+        $('p2p-err').textContent = '传输异常退出（' + (p.err || ('code ' + p.exit)) + '）';
+        $('logbox').open = true;
+      }
+    }
+
     // ── 浏览器直下 ──
-    $('pick-share').onclick = () => $('file-share').click();
-    $('file-share').onchange = async () => {
-      const files = Array.from($('file-share').files);
-      $('file-share').value = '';
-      if (!files.length) return;
-      $('share-err').textContent = '正在生成链接…';
+    function shareUploading() { return !!xhrUp && pickTarget === 'share'; }
+
+    function uploadShare(files) {
+      $('share-err').textContent = '';
       const fd = new FormData();
       for (const f of files) fd.append('file', f, f.name);
-      try {
-        const r = await fetch(api('share'), { method: 'POST', headers: auth(), body: fd });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
-        $('share-err').textContent = '';
-        await refreshShares();
-      } catch (e) {
-        $('share-err').textContent = String(e.message || e);
-      }
-    };
-    $('refresh-shares').onclick = () => refreshShares();
+      const xhr = new XMLHttpRequest();
+      xhrUp = xhr;
+      xhr.open('POST', api('share'));
+      xhr.setRequestHeader('X-P2PCWEB', T);
+      $('share-up').classList.remove('hide');
+      const bar = $('share-bar'), fill = $('share-fill');
+      fill.style.width = '0';
+      bar.classList.add('indet');
+      $('share-meta').textContent = files.length === 1 ? files[0].name : files.length + ' 个文件';
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable && e.total > 0) {
+          bar.classList.remove('indet');
+          fill.style.width = (e.loaded / e.total * 100).toFixed(1) + '%';
+          $('share-meta').textContent = fmtBytes(e.loaded) + ' / ' + fmtBytes(e.total);
+        }
+      };
+      xhr.onload = () => {
+        xhrUp = null;
+        $('share-up').classList.add('hide');
+        let data = {};
+        try { data = JSON.parse(xhr.responseText); } catch (e2) {}
+        if (xhr.status >= 200 && xhr.status < 300) {
+          toast('链接已生成，15 分钟内有效');
+          refreshShares();
+        } else {
+          $('share-err').textContent = data.error || ('HTTP ' + xhr.status);
+        }
+      };
+      xhr.onerror = () => {
+        xhrUp = null;
+        $('share-up').classList.add('hide');
+        $('share-err').textContent = '上传失败';
+      };
+      xhr.send(fd);
+    }
+
     async function refreshShares() {
       try {
         const r = await fetch(api('shares'), { headers: auth() });
         const data = await r.json();
         const el = $('share-list');
         const items = data.shares || [];
-        if (!items.length) { el.innerHTML = '<span style="opacity:.6">暂无在席分享</span>'; return; }
-        el.innerHTML = '';
+        el.textContent = '';
+        if (!items.length) {
+          const empty = document.createElement('div');
+          empty.className = 'share-empty';
+          empty.textContent = '暂无在席分享';
+          el.appendChild(empty);
+          return;
+        }
         for (const sh of items) {
           const row = document.createElement('div');
-          const url = location.origin + sh.url;
+          row.className = 'share-item';
+
+          const name = document.createElement('div');
+          name.className = 'share-name';
           const a = document.createElement('a');
+          const url = location.origin + sh.url;
           a.href = url; a.textContent = sh.name; a.target = '_blank';
+          a.title = '点击直接下载';
+          name.appendChild(a);
+
+          const ttl = document.createElement('span');
+          ttl.className = 'share-ttl';
+          ttl.dataset.exp = String(new Date(sh.expires).getTime());
+
           const copy = document.createElement('button');
-          copy.className = 'ghost'; copy.textContent = '复制链接'; copy.style.cssText = 'padding:2px 8px;font-size:11px;margin-left:8px;';
-          copy.onclick = () => { navigator.clipboard && navigator.clipboard.writeText(url); };
+          copy.className = 'btn sm ghost';
+          copy.textContent = '复制链接';
+          copy.onclick = () => copyText(url, '链接已复制');
+
           const del = document.createElement('button');
-          del.className = 'ghost'; del.textContent = '取消'; del.style.cssText = 'padding:2px 8px;font-size:11px;margin-left:6px;';
+          del.className = 'btn sm ghost';
+          del.textContent = '取消';
           del.onclick = async () => {
-            await fetch(api('share/cancel'), { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, auth()), body: JSON.stringify({ id: sh.id }) });
+            await fetch(api('share/cancel'), {
+              method: 'POST',
+              headers: Object.assign({ 'Content-Type': 'application/json' }, auth()),
+              body: JSON.stringify({ id: sh.id })
+            });
             refreshShares();
           };
-          row.appendChild(a); row.appendChild(copy); row.appendChild(del);
+
+          row.appendChild(name);
+          row.appendChild(ttl);
+          row.appendChild(copy);
+          row.appendChild(del);
           el.appendChild(row);
         }
+        tickTTL();
       } catch (_) {}
     }
-    refreshShares();
 
-    function showCode(code) {
-      const el = $('p2p-mycode');
-      el.classList.remove('ok');
-      el.textContent = code;
-      el.style.display = 'block';
+    // 倒计时每秒按 data-exp 刷新;有行过期即拉一次列表清掉该行。
+    function tickTTL() {
+      let expired = false;
+      document.querySelectorAll('.share-ttl').forEach(t => {
+        const left = Number(t.dataset.exp) - Date.now();
+        if (left <= 0) {
+          t.textContent = '已过期';
+          t.classList.add('hot');
+          expired = true;
+          return;
+        }
+        const m = Math.floor(left / 60000), s = Math.floor(left % 60000 / 1000);
+        t.textContent = '剩 ' + m + ':' + (s < 10 ? '0' + s : s);
+        t.classList.toggle('hot', left < 60000);
+      });
+      if (expired) refreshShares();
     }
-    function appendLog(line) {
-      const log = $('p2p-log');
-      log.style.display = 'block';
-      log.textContent += line + '\n';
-      log.scrollTop = log.scrollHeight;
+    setInterval(tickTTL, 1000);
+    refreshShares();
+    setInterval(() => { if (curTab === 'share') refreshShares(); }, 15000);
+
+    // ── 设置自动保存（文件柜地址 + 注册中心一起持久化）──
+    let saveTimer = null;
+    function scheduleSave() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        try {
+          await postJSON('config', { server_url: $('url').value, registry: $('registry').value });
+          const s = $('save-st');
+          s.classList.add('show');
+          setTimeout(() => s.classList.remove('show'), 1500);
+        } catch (e) { toast('保存失败: ' + (e.message || e)); }
+      }, 700);
     }
-    function resetP2p() {
-      $('p2p-err').textContent = '';
-      $('p2p-mycode').textContent = '';
-      $('p2p-mycode').style.display = 'none';
-      $('p2p-mycode').classList.remove('ok');
-      $('p2p-log').textContent = '';
-      $('p2p-log').style.display = 'none';
-    }
-    function setBusy(b, code) {
-      busy = b;
-      for (const id of ['pick', 'recv', 'p2p-code', 'registry']) $(id).disabled = b;
-      $('cancel').style.display = b ? 'block' : 'none';
-      if (b && code) showCode(code);
-      if (!b) { $('p2p-mycode').style.display = 'none'; }
-    }
-    function finish(p) {
-      setBusy(false);
-      if (p.exit === 0) {
-        const el = $('p2p-mycode');
-        el.classList.add('ok');
-        el.style.display = 'block';
-        el.textContent = p.path ? '✓ 已接收: ' + p.path : '✓ 传输完成';
-      } else if ((p.err || '').includes('kill')) {
-        $('p2p-err').textContent = '已取消';
-      } else {
-        $('p2p-err').textContent = '传输异常退出（' + (p.err || ('code ' + p.exit)) + '），详见日志';
-      }
-    }
+    $('registry').addEventListener('input', scheduleSave);
+    $('url').addEventListener('input', scheduleSave);
+
+    // ── 文件柜 ──
+    $('open-cab').onclick = () => {
+      const u = normalizeURL($('url').value);
+      if (!u) { $('cab-err').textContent = '请先填写服务器地址'; return; }
+      $('cab-err').textContent = '';
+      window.open(u + '/', '_blank');
+    };
   </script>
 </body>
 </html>
