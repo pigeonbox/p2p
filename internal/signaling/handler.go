@@ -9,7 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/pigeonbox/kit/async"
+	"github.com/oekit/concurrency/async"
 	"github.com/pigeonbox/p2p/internal/registry"
 )
 

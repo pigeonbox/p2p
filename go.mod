@@ -5,7 +5,9 @@ go 1.26.9
 require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/klauspost/compress v1.20.1
-	github.com/pigeonbox/kit v0.3.1
+	github.com/oekit/concurrency v0.3.1
+	github.com/oekit/core v0.5.0
+	github.com/oekit/logx v0.2.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/quic-go/quic-go v0.63.0
 	github.com/schollz/pake/v3 v3.2.0
@@ -38,4 +40,5 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )

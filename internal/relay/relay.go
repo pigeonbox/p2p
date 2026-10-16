@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pigeonbox/kit/async"
+	"github.com/oekit/concurrency/async"
 	"golang.org/x/time/rate"
 )
 

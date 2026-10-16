@@ -23,8 +23,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pigeonbox/kit/async"
-	"github.com/pigeonbox/kit/version"
+	"github.com/oekit/concurrency/async"
+	"github.com/oekit/core/version"
 )
 
 // options 全部旗标（服务模式与传输子模式共用一套）。

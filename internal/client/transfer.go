@@ -19,7 +19,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/pigeonbox/kit/async"
+	"github.com/oekit/concurrency/async"
 	"github.com/pigeonbox/p2p/internal/wire"
 )
 

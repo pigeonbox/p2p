@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pigeonbox/kit/ratelimit"
+	"github.com/oekit/concurrency/ratelimit"
 )
 
 var (

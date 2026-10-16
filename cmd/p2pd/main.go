@@ -20,9 +20,9 @@ import (
 	reflectPkg "github.com/pigeonbox/p2p/internal/reflect"
 	relayPkg "github.com/pigeonbox/p2p/internal/relay"
 
-	"github.com/pigeonbox/kit/async"
-	"github.com/pigeonbox/kit/shutdown"
-	"github.com/pigeonbox/kit/version"
+	"github.com/oekit/concurrency/async"
+	"github.com/oekit/logx/shutdown"
+	"github.com/oekit/core/version"
 	"github.com/pigeonbox/p2p/internal/config"
 	"github.com/pigeonbox/p2p/internal/registry"
 	"github.com/pigeonbox/p2p/internal/server"

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pigeonbox/kit/ratelimit"
+	"github.com/oekit/concurrency/ratelimit"
 	"github.com/pigeonbox/p2p/internal/config"
 	"github.com/pigeonbox/p2p/internal/registry"
 	"github.com/pigeonbox/p2p/internal/signaling"

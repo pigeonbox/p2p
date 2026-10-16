@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pigeonbox/kit/async"
-	"github.com/pigeonbox/kit/version"
+	"github.com/oekit/concurrency/async"
+	"github.com/oekit/core/version"
 	"github.com/pigeonbox/p2p/internal/client"
 )
 

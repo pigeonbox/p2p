@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/pigeonbox/kit/version"
+	"github.com/oekit/core/version"
 	"github.com/pigeonbox/p2p/internal/registry"
 )
 
