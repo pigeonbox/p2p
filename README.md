@@ -82,6 +82,7 @@ make smoke                          # 冒烟:注册/公告/解析/信令/直传�
 | **传输协议 v4（破坏性）** | 多文件 manifest 流（逐文件授权/部分接受/目录白名单消毒/zstd 压缩/单遍哈希）、IPv6 双栈、PCP·NAT-PMP·UPnP 端口映射、先通后优（中继先行+后台打洞升级直连）、DNS SRV 多注册中心+rendezvous 分片、中继默认开；**双端（p2pc/desktop）须同版** | ✅ v0.6 |
 | p2pc `--json` 事件流 | NDJSON 单行事件（code/done/error），供程序调用方解析；形态锁单测；缺省纯文本输出不变 | ✅ v0.6.3 |
 | **区间版本协商（N-1 兼容窗口）** | 协商帧 `{proto,floor}`：agreed=min(双方 proto) 且不低于双方 floor，高版本端降级；v4 线上帧逐字节不变；wire 破坏性变更自此必须带 N-1 双格式实现（见 docs/PRODUCT.md） | ✅ v0.7.1 |
+| **投递到柜（PigeonBox 桥）** | p2pc-web 接收完成后经 Box 公开 API（`/share/file/` + X-API-Key）转存为快递柜分享换取 6 位取件码；配置文件柜地址+API Key 即用，Box 侧零改动（Wave A1，见 docs/PRODUCT.md） | ✅ v0.8.0 |
 
 非目标：内容 DHT 去中心化、离线传输、文件中转存储。
 
