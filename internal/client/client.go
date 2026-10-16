@@ -546,7 +546,7 @@ func (c *Client) Send(paths []string, code string) (string, error) {
 	}
 	defer ch.close() // 注:候选交换后信道归升级协程独占,此处关闭即其生命周期
 
-	if err := negotiateVersion(ch); err != nil {
+	if _, err := negotiateVersion(ch); err != nil {
 		return code, err
 	}
 	c.log.Info("对端已接入,开始 PAKE")
@@ -622,7 +622,7 @@ func (c *Client) Receive(code, dir string) ([]string, error) {
 		return nil, fmt.Errorf("身份核对失败: 信道对端 %s ≠ 公告节点 %s", ch.peerID, senderID)
 	}
 
-	if err := negotiateVersion(ch); err != nil {
+	if _, err := negotiateVersion(ch); err != nil {
 		return nil, err
 	}
 	c.log.Info("已配对且身份核对通过,开始 PAKE")

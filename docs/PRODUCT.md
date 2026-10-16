@@ -39,11 +39,21 @@
 **Phase 1（本档，零破坏，已完成 2026-10-16）**
 独立品牌 PigeonBeam + README 重构定位 + 本档。二进制名（p2pc / p2pc-web / p2pd）、wire 协议、Releases 出口、随包钉版全部不变——主产品一行代码未动。
 
-**Phase 2（随下一列车实施，禁止绕列车手改钉版）**
-解打包税：
+**Phase 2（① 已落地 v0.7.1；② 随下一列车实施，禁止绕列车手改钉版）**
 
-1. wire 协议加 **N-1 兼容窗口**（配对后版本协商已存在于 v3，扩为允许上一版共存），解除「双端同版」对发版节奏的绑架——这是独立发版节奏的前提；
-2. server `.p2pc-version` / fnos·qnap·openwrt `P2PC_REF` / desktop sidecar 的 p2pc 从「必带」转「可选」，或至少与列车脱钩、按 p2p 自己的节奏钉版。
+① wire N-1 兼容窗口（✅ v0.7.1，协商层）：版本帧从「等值匹配」升级为区间协商 `{proto:最高支持, floor:最低支持}`，一致规则 `agreed=min(双方 proto)` 且不得低于双方 floor，**高版本端负责降级到 agreed 对话**。v4 的 floor 恒等于 proto，线上帧逐字节不变（形态锁单测把守）。约束随之生效：**wire 破坏性变更（v5 起）必须带 N-1 双格式实现**（旧格式路径+按 agreed 选格式），否则不得升 proto。存量 fleet（NAS/desktop 钉版不升级）由此获得未来过渡期互操作。
+
+② 打包钉版与列车脱钩（待列车编排实施）。五处钉版点位与目标动作：
+
+| 点位 | 现状 | 目标 |
+|---|---|---|
+| server `.p2pc-version` / Dockerfile `ARG P2PC_VERSION` | 每列车随 bump 矩阵自动动 | 冻结在 v0.7.0；仅 p2p 出安全/相关 bug 修复时手动 bump |
+| fnos `DEPS.env P2PC_REF`（+sha256 校验） | 同上 | 同上 |
+| qnap `P2PC_REF` | 同上 | 同上 |
+| openwrt `P2PC_REF` | 同上 | 同上 |
+| desktop sidecar（CI 按 triple 拉 + bundle.externalBin） | 随列车同升 | 同上 |
+
+实施要点：列车编排器（hub `release/train.yaml` + trainctl）把上述点位从自动 bump 矩阵移出，保留手动 bump 通道；sha256 校验、缺省优雅降级机制一律不动；`make train-verify` 对钉版一致性的断言保留（防幽灵版本的守卫仍需钉版点自洽）。收益：直传维护模式下 p2p 不再绑架列车节奏；过渡期互操作由 ① 保障。
 
 **Phase 3（2.0.0 窗口，与单码制同车拍板）**
 若独立应用立住，主产品编排层收缩为可选集成：admin 直传控制台改为「检测到 p2pc 才显示」（或移除），MCP 直传工具与 `pb` p2p 子命令同步收缩。**联邦与 p2pd 不动。**
