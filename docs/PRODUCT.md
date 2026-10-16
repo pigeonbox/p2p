@@ -55,8 +55,8 @@
 
 实施要点：列车编排器（hub `release/train.yaml` + trainctl）把上述点位从自动 bump 矩阵移出，保留手动 bump 通道；sha256 校验、缺省优雅降级机制一律不动；`make train-verify` 对钉版一致性的断言保留（防幽灵版本的守卫仍需钉版点自洽）。收益：直传维护模式下 p2p 不再绑架列车节奏；过渡期互操作由 ① 保障。
 
-**Phase 3（2.0.0 窗口，与单码制同车拍板）**
-若独立应用立住，主产品编排层收缩为可选集成：admin 直传控制台改为「检测到 p2pc 才显示」（或移除），MCP 直传工具与 `pb` p2p 子命令同步收缩。**联邦与 p2pd 不动。**
+**Phase 3（v3.0.0 主波；细案见 hub `docs/specs/2026-10-16-two-app-split-design.md`，决策点 D1-D4 待拍板）**
+两应用终态分拆（原 2.0.0 窗口已随 v2.0.1 发运，破坏性拆除顺延至下一主版本）：Box 侧整体拆除直传编排层——p2px supervisor / admin 8 直传端点 / MCP 4 工具 / CLI 5 子命令 / P2pTransfer 直传控制台 / SystemConfig `direct` 段 / 随包钉版 / desktop sidecar；联邦面与 p2pd 原样留守。**桥方向翻转**：不再是 Box 内嵌编排 p2pc，而是 Beam 作 Box 的 API 客户端——p2pcweb「投递到柜」（收件经 Box 公开 API 建分享拿取件码），Box 零 Beam 代码。Wave A 非破坏项（投递到柜 / NAS 内嵌 Beam 客户端 / desktop sidecar 冻结 / docs）随 2.0.x 列车先行。
 
 ## 品牌约定
 
