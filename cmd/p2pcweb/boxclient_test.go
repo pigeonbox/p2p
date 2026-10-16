@@ -156,3 +156,33 @@ func TestParseDonePaths(t *testing.T) {
 		t.Errorf("空标记应 nil: %q", got)
 	}
 }
+
+func TestResolveToken(t *testing.T) {
+	// 显式 --token 优先
+	if got, _ := resolveToken(&options{token: " t1 "}); got != "t1" {
+		t.Errorf("显式令牌未去空格: %q", got)
+	}
+	// 令牌文件:无则生成写入 0600,再读复用(跨重启稳定)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "sub", "token")
+	got1, err := resolveToken(&options{tokenFile: p})
+	if err != nil || got1 == "" {
+		t.Fatalf("首启生成失败: %v", err)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("令牌文件未落盘: %v", err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("令牌文件权限: %v", fi.Mode().Perm())
+	}
+	got2, _ := resolveToken(&options{tokenFile: p})
+	if got2 != got1 {
+		t.Errorf("重启后令牌漂移: %q != %q", got2, got1)
+	}
+	// 两者都空 = 随机(非空即可)
+	got3, err := resolveToken(&options{})
+	if err != nil || got3 == "" {
+		t.Fatalf("随机令牌: %v", err)
+	}
+}

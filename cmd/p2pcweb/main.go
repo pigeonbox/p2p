@@ -19,7 +19,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +37,8 @@ type options struct {
 	noOpen    bool
 	relay     string
 	noPunch   bool
+	token     string // 显式访问令牌（无头部署/测试；空=随机或令牌文件）
+	tokenFile string // 持久化令牌路径：有则读、无则生成写入（NAS 跨重启稳定）
 	// 传输子模式专用
 	child    string
 	registry string
@@ -64,6 +68,8 @@ func main() {
 	fs.BoolVar(&o.noOpen, "no-open", false, "不自动打开浏览器")
 	fs.StringVar(&o.relay, "relay", "", "中继地址（缺省按注册中心 host 推导 :12347）")
 	fs.BoolVar(&o.noPunch, "no-punch", false, "跳过 UDP 打洞直接走中继")
+	fs.StringVar(&o.token, "token", "", "访问令牌（缺省随机生成；无头部署/测试固定值用）")
+	fs.StringVar(&o.tokenFile, "token-file", "", "持久化令牌文件（有则读、无则生成写入 0600；NAS 等无头部署跨重启稳定）")
 	fs.StringVar(&o.child, "transfer-child", "", "内部用:传输子模式(send|recv)，勿手动调用")
 	fs.StringVar(&o.registry, "registry", "", "传输子模式:p2pd 基址")
 	fs.StringVar(&o.path, "path", "", "传输子模式:发送文件路径")
@@ -86,9 +92,9 @@ func main() {
 }
 
 func runServer(o *options) error {
-	token, err := newToken()
+	token, err := resolveToken(o)
 	if err != nil {
-		return fmt.Errorf("生成访问令牌: %w", err)
+		return err
 	}
 	lw, err := net.Listen("tcp", o.addr)
 	if err != nil {
@@ -136,6 +142,36 @@ func runServer(o *options) error {
 		return err
 	}
 	return nil
+}
+
+// resolveToken 令牌来源优先级：--token 显式 > --token-file 持久化（有则读、
+// 无则生成并写 0600——NAS 等无头部署跨重启稳定，服务脚本无需自己造随机数）
+// > 随机生成（桌面缺省）。
+func resolveToken(o *options) (string, error) {
+	if t := strings.TrimSpace(o.token); t != "" {
+		return t, nil
+	}
+	if p := strings.TrimSpace(o.tokenFile); p != "" {
+		if b, err := os.ReadFile(p); err == nil {
+			if t := strings.TrimSpace(string(b)); t != "" {
+				return t, nil
+			}
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("读令牌文件 %s: %w", p, err)
+		}
+		t, err := newToken()
+		if err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return "", fmt.Errorf("创建令牌目录: %w", err)
+		}
+		if err := os.WriteFile(p, []byte(t+"\n"), 0o600); err != nil {
+			return "", fmt.Errorf("写令牌文件 %s: %w", p, err)
+		}
+		return t, nil
+	}
+	return newToken()
 }
 
 // displayHost 横幅展示用的主机名（通配监听时提示回环地址）。
