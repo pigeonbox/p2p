@@ -27,7 +27,7 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       # lint 棘轮（.golangci.yml 从 0 issues 起步，只收紧不放宽）
       - name: Lint (golangci-lint)
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.14
           args: --timeout 9m
