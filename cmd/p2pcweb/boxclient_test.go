@@ -186,3 +186,24 @@ func TestResolveToken(t *testing.T) {
 		t.Fatalf("随机令牌: %v", err)
 	}
 }
+
+// 回归:handleConfig 的 snake_case 键必须真正落盘(曾因匿名结构体缺 tag 整体解码为零值,
+// 「自动保存」静默失效——真机 fnOS 实测抓到)。走 handler 全链路断言 store 内容。
+func TestHandleConfigRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	s := &Server{token: "t", mgr: NewManager(), cfg: newCfgStoreAt(filepath.Join(dir, "cfg.json"))}
+	body := `{"server_url":"http://box.example","registry":"http://reg.example","box_api_key":"k-123"}`
+	r := httptest.NewRequest("POST", "/api/config", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	s.handleConfig(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("保存期望 200, got %d", w.Code)
+	}
+	cfg := s.cfg.get()
+	if cfg.ServerURL != "http://box.example" || cfg.Registry != "http://reg.example" || cfg.BoxAPIKey != "k-123" {
+		t.Fatalf("配置未落盘: %+v", cfg)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "cfg.json")); err != nil || fi.Size() == 0 {
+		t.Fatalf("配置文件未写: %v", err)
+	}
+}

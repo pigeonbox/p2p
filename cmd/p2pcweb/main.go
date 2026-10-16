@@ -31,14 +31,15 @@ import (
 
 // options 全部旗标（服务模式与传输子模式共用一套）。
 type options struct {
-	addr      string
-	outDir    string
-	maxUpload int64
-	noOpen    bool
-	relay     string
-	noPunch   bool
-	token     string // 显式访问令牌（无头部署/测试；空=随机或令牌文件）
-	tokenFile string // 持久化令牌路径：有则读、无则生成写入（NAS 跨重启稳定）
+	addr       string
+	outDir     string
+	maxUpload  int64
+	noOpen     bool
+	relay      string
+	noPunch    bool
+	token      string // 显式访问令牌（无头部署/测试；空=随机或令牌文件）
+	tokenFile  string // 持久化令牌路径：有则读、无则生成写入（NAS 跨重启稳定）
+	configFile string // 配置文件显式路径（空=os.UserConfigDir；NAS 服务用户家目录常不可写）
 	// 传输子模式专用
 	child    string
 	registry string
@@ -70,6 +71,7 @@ func main() {
 	fs.BoolVar(&o.noPunch, "no-punch", false, "跳过 UDP 打洞直接走中继")
 	fs.StringVar(&o.token, "token", "", "访问令牌（缺省随机生成；无头部署/测试固定值用）")
 	fs.StringVar(&o.tokenFile, "token-file", "", "持久化令牌文件（有则读、无则生成写入 0600；NAS 等无头部署跨重启稳定）")
+	fs.StringVar(&o.configFile, "config-file", "", "配置文件显式路径（缺省走系统配置目录；NAS 服务用户家目录常不可写，落数据卷）")
 	fs.StringVar(&o.child, "transfer-child", "", "内部用:传输子模式(send|recv)，勿手动调用")
 	fs.StringVar(&o.registry, "registry", "", "传输子模式:p2pd 基址")
 	fs.StringVar(&o.path, "path", "", "传输子模式:发送文件路径")
@@ -115,7 +117,7 @@ func runServer(o *options) error {
 		outDir:    resolveDownloadDir(o.outDir),
 		relay:     o.relay,
 		noPunch:   o.noPunch,
-		cfg:       newCfgStore(),
+		cfg:       newCfgStoreAt(o.configFile), // 空路径=回退系统配置目录(与缺省行为一致)
 		mgr:       NewManager(),
 		shares:    newShareTable(),
 	}

@@ -262,7 +262,11 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	var in struct{ ServerURL, Registry, BoxAPIKey string }
+	var in struct {
+		ServerURL string `json:"server_url"`
+		Registry  string `json:"registry"`
+		BoxAPIKey string `json:"box_api_key"`
+	} // ⚠ tag 必须显式:snake_case 键与 Go 驼峰字段仅大小写折叠不兼容(曾致配置静默不落盘)
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求体非法")
 		return
