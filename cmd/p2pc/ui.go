@@ -68,7 +68,7 @@ func (h *uiHandler) clear() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.active {
-		fmt.Fprint(h.w, "\r"+strings.Repeat(" ", uiLineWidth)+"\r")
+		_, _ = fmt.Fprint(h.w, "\r"+strings.Repeat(" ", uiLineWidth)+"\r")
 		h.active = false
 	}
 }
@@ -90,13 +90,13 @@ func (h *uiHandler) Handle(_ context.Context, r slog.Record) error {
 			return true
 		})
 		h.updateLocked(got, total)
-		fmt.Fprint(h.w, "\r"+h.renderLocked())
+		_, _ = fmt.Fprint(h.w, "\r"+h.renderLocked())
 		h.active = true
 		return nil
 	}
 	// 普通日志:先清进度行,打完再让位（下一次进度记录会重画）
 	if h.active {
-		fmt.Fprint(h.w, "\r"+strings.Repeat(" ", uiLineWidth)+"\r")
+		_, _ = fmt.Fprint(h.w, "\r"+strings.Repeat(" ", uiLineWidth)+"\r")
 		h.active = false
 	}
 	var b strings.Builder
@@ -113,7 +113,7 @@ func (h *uiHandler) Handle(_ context.Context, r slog.Record) error {
 		b.WriteString("  " + a.Key + "=" + a.Value.String())
 		return true
 	})
-	fmt.Fprintln(h.w, strings.TrimRight(b.String(), " "))
+	_, _ = fmt.Fprintln(h.w, strings.TrimRight(b.String(), " "))
 	return nil
 }
 
