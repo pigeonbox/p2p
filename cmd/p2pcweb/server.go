@@ -230,6 +230,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/share", s.guard(s.handleShare))
 	mux.HandleFunc("GET /api/shares", s.guard(s.handleShareList))
 	mux.HandleFunc("POST /api/share/cancel", s.guard(s.handleShareCancel))
+	mux.HandleFunc("POST /api/deliver", s.guard(s.handleDeliver))
 	mux.HandleFunc("GET /d/{id}", s.handleDownload) // 独立令牌门禁(对端浏览器无主令牌)
 	return mux
 }
@@ -248,19 +249,20 @@ func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 	cfg := s.cfg.get()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"busy":       s.mgr.Busy(),
-		"role":       s.mgr.Role(),
-		"code":       s.mgr.Code(),
-		"server_url": cfg.ServerURL,
-		"registry":   cfg.Registry,
-		"out_dir":    s.outDir,
-		"version":    version.Version,
-		"max_upload": s.maxUpload,
+		"busy":        s.mgr.Busy(),
+		"role":        s.mgr.Role(),
+		"code":        s.mgr.Code(),
+		"server_url":  cfg.ServerURL,
+		"registry":    cfg.Registry,
+		"has_box_key": cfg.BoxAPIKey != "",
+		"out_dir":     s.outDir,
+		"version":     version.Version,
+		"max_upload":  s.maxUpload,
 	})
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	var in struct{ ServerURL, Registry string }
+	var in struct{ ServerURL, Registry, BoxAPIKey string }
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求体非法")
 		return
@@ -271,6 +273,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Registry != "" {
 		cfg.Registry = normalizeBaseURL(in.Registry)
+	}
+	if k := strings.TrimSpace(in.BoxAPIKey); k != "" {
+		cfg.BoxAPIKey = k // 留空=保持已存值(密钥不回传前端,界面只显示已存标记)
 	}
 	if err := s.cfg.set(cfg); err != nil {
 		writeErr(w, http.StatusInternalServerError, "保存失败: "+err.Error())
@@ -423,12 +428,51 @@ func (s *Server) handleRecv(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请填写直传注册中心地址")
 		return
 	}
-	_ = s.cfg.set(Config{ServerURL: s.cfg.get().ServerURL, Registry: registry})
+	// 读改写：字面量重建会清掉未列出的字段(如 BoxAPIKey)
+	cfg := s.cfg.get()
+	cfg.Registry = registry
+	_ = s.cfg.set(cfg)
 	if err := s.mgr.Start("recv", registry, code, "", s.outDir, s.relay, s.noPunch, nil); err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"ok": "1"})
+}
+
+// handleDeliver 投递到柜：把接收目录内的文件经公开 API 转存为文件柜分享
+// （PigeonBeam↔PigeonBox 唯一桥,Box 侧零改动）。路径限定接收目录——
+// 投递的语义是"刚收到的文件",不开放任意本地文件读取面。
+func (s *Server) handleDeliver(w http.ResponseWriter, r *http.Request) {
+	var in struct{ Path string }
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&in); err != nil || in.Path == "" {
+		writeErr(w, http.StatusBadRequest, "请求体非法")
+		return
+	}
+	cfg := s.cfg.get()
+	if cfg.ServerURL == "" || cfg.BoxAPIKey == "" {
+		writeErr(w, http.StatusBadRequest, "请先在「文件柜」页配置服务器地址与 API Key")
+		return
+	}
+	clean, err := filepath.Abs(filepath.Clean(in.Path))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "路径非法")
+		return
+	}
+	base, err := filepath.Abs(s.outDir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "接收目录解析失败: "+err.Error())
+		return
+	}
+	if clean != base && !strings.HasPrefix(clean, base+string(filepath.Separator)) {
+		writeErr(w, http.StatusForbidden, "仅允许投递接收目录内的文件")
+		return
+	}
+	res, err := deliverToBox(cfg.ServerURL, cfg.BoxAPIKey, clean)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "投递失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // handleShare 创建浏览器直下分享(multipart 与 handleSend 同构,无需注册中心)。

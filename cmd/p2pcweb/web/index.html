@@ -257,6 +257,10 @@
             <button id="again" class="btn hide">再传一次</button>
           </div>
           <div class="err" id="p2p-err"></div>
+          <div id="deliver-box" class="hide" style="margin-top:10px">
+            <p class="mini" style="margin:0 2px 6px;">投递到柜 —— 把收到的文件转存为文件柜分享，换取 6 位取件码：</p>
+            <div id="deliver-list"></div>
+          </div>
           <details class="logbox" id="logbox">
             <summary>传输日志</summary>
             <pre class="log" id="p2p-log"></pre>
@@ -295,8 +299,12 @@
           <input id="url" class="grow" placeholder="服务器地址，如 http://10.44.129.215" spellcheck="false" />
           <button id="open-cab" class="btn">打开文件柜</button>
         </div>
+        <div class="hrow" style="margin-top:8px">
+          <input id="box-key" class="grow" type="password" placeholder="API Key（投递到柜用；柜侧 个人设置 → API Token 生成）" spellcheck="false" autocomplete="off" />
+          <span class="st" id="box-key-st"></span>
+        </div>
         <div class="err" id="cab-err"></div>
-        <p class="mini" style="margin: 8px 2px 0;">地址修改后自动保存到本机。</p>
+        <p class="mini" style="margin: 8px 2px 0;">地址与 API Key 修改后自动保存到本机；配置后，接收完成的文件可一键投递到文件柜换取取件码。</p>
       </div>
     </section>
 
@@ -419,6 +427,7 @@
       st = await (await fetch(api('state'), { headers: auth() })).json();
       $('url').value = st.server_url || '';
       $('registry').value = st.registry || '';
+      if (st.has_box_key) $('box-key').placeholder = '已保存 API Key ✓（输入新值可覆盖）';
       $('out-dir').textContent = st.out_dir || '';
       $('ver').textContent = 'v' + (st.version || '?');
       if (st.max_upload) $('drop-limit').textContent = '支持多文件 · 单文件上限 ' + fmtBytes(st.max_upload);
@@ -594,6 +603,8 @@
       $('p2p-err').textContent = '';
       $('via-chip').classList.add('hide');
       $('logbox').open = false;
+      $('deliver-box').classList.add('hide');
+      $('deliver-list').innerHTML = '';
       $('bdg-p2p').classList.remove('show');
       $('mode-seg').classList.remove('hide');
       const m = document.querySelector('#mode-seg button.on');
@@ -747,6 +758,7 @@
           appendLog('✓ 已保存: ' + (p.path || ''));
           $('live-hint').textContent = '已保存到 ' + (p.path || '下载目录');
           $('live-hint').style.display = 'block';
+          renderDeliver(p.paths && p.paths.length ? p.paths : (p.path ? [p.path] : []));
         }
       } else if ((p.err || '').indexOf('kill') >= 0) {
         setPhase('cancelled');
@@ -754,6 +766,48 @@
         setPhase('failed');
         $('p2p-err').textContent = '传输异常退出（' + (p.err || ('code ' + p.exit)) + '）';
         $('logbox').open = true;
+      }
+    }
+
+    // ── 投递到柜 ──
+    function renderDeliver(files) {
+      const box = $('deliver-box'), list = $('deliver-list');
+      list.innerHTML = '';
+      if (!files.length) { box.classList.add('hide'); return; }
+      box.classList.remove('hide');
+      for (const f of files) {
+        const row = document.createElement('div');
+        row.className = 'hrow';
+        row.style.margin = '4px 0';
+        const name = document.createElement('span');
+        name.className = 'mono grow';
+        name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;';
+        name.textContent = f.split('/').pop().split('\\').pop();
+        name.title = f;
+        const btn = document.createElement('button');
+        btn.className = 'btn sm';
+        btn.textContent = '投递到柜';
+        const res = document.createElement('span');
+        res.className = 'st';
+        btn.onclick = async () => {
+          btn.disabled = true;
+          res.textContent = '投递中…';
+          try {
+            const r = await postJSON('deliver', { path: f });
+            const code = r.pickup_code || r.share_code || '?';
+            btn.textContent = '已投递 ✓';
+            res.textContent = '取件码 ' + code;
+            appendLog('✓ 已投递到柜: ' + code + '  ' + f);
+            toast('已投递到柜，取件码 ' + code);
+          } catch (e) {
+            res.textContent = '';
+            btn.disabled = false;
+            appendLog('✗ 投递失败: ' + (e.message || e));
+            toast('投递失败: ' + (e.message || e));
+          }
+        };
+        row.append(name, btn, res);
+        list.appendChild(row);
       }
     }
 
@@ -884,7 +938,10 @@
       clearTimeout(saveTimer);
       saveTimer = setTimeout(async () => {
         try {
-          await postJSON('config', { server_url: $('url').value, registry: $('registry').value });
+          const cfg = { server_url: $('url').value, registry: $('registry').value };
+          const key = $('box-key').value.trim();
+          if (key) cfg.box_api_key = key; // 留空不覆盖已存密钥
+          await postJSON('config', cfg);
           const s = $('save-st');
           s.classList.add('show');
           setTimeout(() => s.classList.remove('show'), 1500);
@@ -893,6 +950,7 @@
     }
     $('registry').addEventListener('input', scheduleSave);
     $('url').addEventListener('input', scheduleSave);
+    $('box-key').addEventListener('input', scheduleSave);
 
     // ── 文件柜 ──
     $('open-cab').onclick = () => {

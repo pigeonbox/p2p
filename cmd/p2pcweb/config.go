@@ -14,8 +14,9 @@ import (
 
 // Config 持久化配置。
 type Config struct {
-	ServerURL string `json:"server_url"` // 文件柜地址（浏览器打开用）
-	Registry  string `json:"registry"`   // 直传注册中心地址
+	ServerURL string `json:"server_url"`  // 文件柜地址（浏览器打开用；投递到柜的目标）
+	Registry  string `json:"registry"`    // 直传注册中心地址
+	BoxAPIKey string `json:"box_api_key"` // 文件柜 API Key（投递到柜；经 X-API-Key 调 /share/file/）
 }
 
 func configPath() (string, error) {

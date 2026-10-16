@@ -32,27 +32,29 @@ const (
 
 // Event SSE 推送事件。
 type Event struct {
-	Type  string `json:"type"`           // state | code | progress | log | exit
-	Line  string `json:"line,omitempty"` // log：日志行
-	Code  string `json:"code,omitempty"` // code/state：直传口令
-	Busy  bool   `json:"busy,omitempty"` // state：是否有传输进行中
-	Role  string `json:"role,omitempty"` // state：send | recv
-	Exit  int    `json:"exit"`           // exit：子进程退出码（0=成功;勿加 omitempty,否则成功态被省略致前端误判失败）
-	Path  string `json:"path,omitempty"` // exit：接收落盘路径
-	Err   string `json:"err,omitempty"`  // exit：失败原因
-	Got   int64  `json:"got"`            // progress：已传字节
-	Total int64  `json:"total"`          // progress：总字节（0=未知,界面转圈）
+	Type  string   `json:"type"`            // state | code | progress | log | exit
+	Line  string   `json:"line,omitempty"`  // log：日志行
+	Code  string   `json:"code,omitempty"`  // code/state：直传口令
+	Busy  bool     `json:"busy,omitempty"`  // state：是否有传输进行中
+	Role  string   `json:"role,omitempty"`  // state：send | recv
+	Exit  int      `json:"exit"`            // exit：子进程退出码（0=成功;勿加 omitempty,否则成功态被省略致前端误判失败）
+	Path  string   `json:"path,omitempty"`  // exit：接收落盘路径（首个,兼容旧前端）
+	Paths []string `json:"paths,omitempty"` // exit：接收落盘路径清单（多文件）
+	Err   string   `json:"err,omitempty"`   // exit：失败原因
+	Got   int64    `json:"got"`             // progress：已传字节
+	Total int64    `json:"total"`           // progress：总字节（0=未知,界面转圈）
 }
 
 // Manager 单会话传输管理器。
 type Manager struct {
-	mu       sync.Mutex
-	cmd      *exec.Cmd
-	running  bool
-	role     string // send | recv
-	code     string
-	donePath string
-	cleanup  func()
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	running   bool
+	role      string // send | recv
+	code      string
+	donePath  string   // 首个落盘路径（兼容字段）
+	donePaths []string // 全部落盘路径
+	cleanup   func()
 
 	subMu sync.Mutex
 	subs  map[chan Event]struct{}
@@ -131,7 +133,7 @@ func (m *Manager) Start(kind, registry, code, path, outDir, relay string, noPunc
 		m.mu.Unlock()
 		return fmt.Errorf("启动传输: %w", err)
 	}
-	m.cmd, m.running, m.role, m.code, m.donePath, m.cleanup = cmd, true, kind, code, "", cleanup
+	m.cmd, m.running, m.role, m.code, m.donePath, m.donePaths, m.cleanup = cmd, true, kind, code, "", nil, cleanup
 	m.mu.Unlock()
 
 	m.broadcast(Event{Type: "code", Code: code})
@@ -160,8 +162,13 @@ func (m *Manager) pipe(r io.Reader) {
 	for sc.Scan() {
 		line := sc.Text()
 		if strings.HasPrefix(line, doneMarker) {
+			paths := parseDonePaths(line)
 			m.mu.Lock()
-			m.donePath = strings.TrimSpace(strings.TrimPrefix(line, doneMarker))
+			m.donePaths = paths
+			m.donePath = ""
+			if len(paths) > 0 {
+				m.donePath = paths[0]
+			}
 			m.mu.Unlock()
 			continue
 		}
@@ -171,6 +178,16 @@ func (m *Manager) pipe(r io.Reader) {
 		}
 		m.broadcast(Event{Type: "log", Line: line})
 	}
+}
+
+// parseDonePaths DONE 标记行 → 落盘路径清单。多文件以 \x1f 连接（路径可含
+// 空格，控制字节不会出现在文件名）；单文件形态与旧版逐字节一致。
+func parseDonePaths(line string) []string {
+	v := strings.TrimSpace(strings.TrimPrefix(line, doneMarker))
+	if v == "" {
+		return nil
+	}
+	return strings.Split(v, "\x1f")
 }
 
 // parseProgressLine 解析子进程进度标记行「P2PCWEB-PROGRESS got=N total=M」。
@@ -202,7 +219,8 @@ func (m *Manager) wait() {
 	m.mu.Lock()
 	cleanup := m.cleanup
 	path := m.donePath
-	m.running, m.role, m.code, m.donePath, m.cleanup = false, "", "", "", nil
+	paths := m.donePaths
+	m.running, m.role, m.code, m.donePath, m.donePaths, m.cleanup = false, "", "", "", nil, nil
 	m.mu.Unlock()
 
 	exitCode := 0
@@ -219,7 +237,7 @@ func (m *Manager) wait() {
 	if cleanup != nil {
 		cleanup()
 	}
-	m.broadcast(Event{Type: "exit", Exit: exitCode, Path: path, Err: msg})
+	m.broadcast(Event{Type: "exit", Exit: exitCode, Path: path, Paths: paths, Err: msg})
 }
 
 // runTransferChild 隐藏子模式：跑阻塞式 client，日志经 prettyHandler 转
@@ -245,7 +263,7 @@ func runTransferChild(o *options) int {
 		if len(files) == 0 {
 			return childFail(fmt.Errorf("未收到文件"))
 		}
-		fmt.Println(doneMarker + " " + files[0])
+		fmt.Println(doneMarker + " " + strings.Join(files, "\x1f"))
 	default:
 		return childFail(fmt.Errorf("未知传输子模式 %q", o.child))
 	}
