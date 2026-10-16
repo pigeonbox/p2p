@@ -1,4 +1,4 @@
-// p2pc — PigeonBox P2P 设备直传参考客户端（M3）。
+// p2pc — PigeonBeam（信鸽直传）设备直传客户端。
 //
 //	p2pc send 文件 --registry http://r:12346   → 输出口令,等待对端取走
 //	p2pc recv <口令> --registry http://r:12346 → 接收到当前目录
@@ -65,7 +65,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Print(`p2pc — PigeonBox P2P 设备直传客户端
+	fmt.Print(`p2pc — PigeonBeam（信鸽直传）设备直传客户端
 
 用法:
   p2pc send <文件|目录>... [--registry URL] [--code 口令] [--relay HOST:PORT]

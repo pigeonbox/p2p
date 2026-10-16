@@ -1,13 +1,72 @@
-# PigeonBox P2P
+# PigeonBeam（信鸽直传）
 
 [![CI](https://github.com/pigeonbox/p2p/actions/workflows/ci.yml/badge.svg)](https://github.com/pigeonbox/p2p/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/tag/pigeonbox/p2p?label=release)](https://github.com/pigeonbox/p2p/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
 
-PigeonBox 生态的 **P2P 联邦注册中心**：让任意多个 PigeonBox 节点（server / fnos / desktop）互相发现，口令分享跨站可达——文件始终从源节点直出，注册中心不落盘、不见明文。
+**PigeonBox 生态的设备直传独立应用**：任意两台设备之间端到端直传文件——口令即身份（PAKE）、无需账号、无需同网段，UDP 打洞优先、失败自动回落加密中继，QUIC 多流 + 断点续传 + sha256 校验。可完全独立使用；也可作为 [PigeonBox](https://github.com/pigeonbox/pigeonbox)（文件快递柜）的可选直传组件——装了就多一份设备直传能力，不装自动降级，主产品零依赖。
 
-**The federated registry for PigeonBox**: nodes register, passcodes resolve across sites, files flow directly from the source node — the registry stores no files and never sees plaintext passcodes.
+**Standalone device-to-device transfer**: passphrase-derived identity (PAKE), no accounts, no same-LAN requirement — UDP hole-punching first, encrypted-relay fallback, QUIC multi-stream resumable transfers. Works entirely on its own; optionally serves as the direct-transfer engine of PigeonBox.
+
+产品定位、与 PigeonBox 的边界与拆分路线见 [docs/PRODUCT.md](./docs/PRODUCT.md)。
+
+## 三个组件
+
+| 组件 | 是什么 | 分发 |
+|---|---|---|
+| `p2pc` | 直传客户端（命令行） | 六平台静态二进制随 [Release](https://github.com/pigeonbox/p2p/releases) 发布（资产名 = 目标平台 triple） |
+| `p2pc-web` | 直传客户端（网页模式） | 同上；单个纯静态二进制，本机起回环 HTTP 服务，浏览器即界面 |
+| `p2pd` | 注册中心 + 加密中继（可选自建） | 官方公共节点已运营；Docker 镜像 `ghcr.io/pigeonbox/p2p`；运营手册见 [docs/PUBLIC-NODES.md](./docs/PUBLIC-NODES.md) |
+
+## 快速开始
+
+从 [Releases](https://github.com/pigeonbox/p2p/releases) 下载对应平台的 `p2pc-*` / `p2pc-web-*`，两端各跑一份，口令即配对。`--registry` 指向任一 p2pd：自建的用内网地址，跨网直传可用官方公共节点。
+
+```bash
+# 发送方(自动生成口令 XXXX-XXXX-XXXX 并等待对方取走)
+p2pc send 报告.pdf --registry http://home.enjoye.top:56788
+
+# 接收方(输入同一口令,文件直连下载到当前目录)
+p2pc recv XXXX-XXXX-XXXX --registry http://home.enjoye.top:56788
+
+# 接收方亦可经 env 传码(v0.6.2 起):`recv -` 从 PB_P2P_CODE 读口令,
+# argv 不留码——同机 `ps` 看不到口令,适合共享主机/CI 环境
+PB_P2P_CODE=XXXX-XXXX-XXXX p2pc recv -
+
+# 程序调用方(v0.6.3 起):--json 输出 NDJSON 事件流(send/recv 均支持;
+# recv 下强制非交互;缺省纯文本不变)
+p2pc send 报告.pdf --json
+# {"event":"code","code":"XXXX-XXXX-XXXX"}
+# {"event":"done","kind":"send"}
+```
+
+CLI 缺省 registry 是 `http://127.0.0.1:12346`（本机自建场景）；`--registry` 传裸域名自动走 DNS SRV（`_p2pc._tcp.<域>`）发现，多源 failover 用 `--registries`（或 `PB_P2P_REGISTRIES`）。
+
+网页模式（p2pc-web）——不想敲命令行时，浏览器就是界面：
+
+```bash
+./p2pc-web-x86_64-unknown-linux-gnu                       # 默认 127.0.0.1:12348,自动开浏览器
+./p2pc-web-x86_64-unknown-linux-gnu --out ~/下载 --no-open # 另有 --addr --max-upload --relay --no-punch
+```
+
+自建注册中心（可选，不自建则用公共节点）：
+
+```bash
+docker run -d --name pigeonbeam-registry -p 12346:12346/udp -p 12346:12346 -p 12347:12347 \
+  -e PB_P2P_ADMIN_PASSWORD=$(openssl rand -hex 16) \
+  ghcr.io/pigeonbox/p2p:latest
+
+make build && ./bin/p2pd            # 源码构建: 服务端:12346(HTTP/WS/反射器)+12347(中继,默认开)
+make smoke                          # 冒烟:注册/公告/解析/信令/直传回环全流程
+```
+
+## 直传能力面（p2pc）
+
+支持多文件/目录、断点续传、可选 zstd 压缩(>1MB 自动)、逐文件授权、
+大文件多流并行、先通后优(中继先行+后台打洞升级直连)与 IPv6 双栈。
+
+流程：节点注册+口令公告 → WS 信令配对（接收方与 resolve 源身份交叉核对）→ PAKE（口令派生会话密钥）→ 候选地址交换（PAKE 派生密钥加密）→ **UDP 同时开洞**（反射器提供公网映射；成功走 QUIC 指纹钉定 mTLS 直连）→ 失败回落**加密中继**（12347，令牌配对+限速）→ AEAD 消息传输（meta/ready/chunk/final，断点续传）→ sha256 全量校验。服务端全程只见密文。
 
 ## 它解决什么
 
@@ -25,54 +84,9 @@ PigeonBox 生态的 **P2P 联邦注册中心**：让任意多个 PigeonBox 节�
 
 非目标：内容 DHT 去中心化、离线传输、文件中转存储。
 
-## 快速开始
-
-```bash
-docker run -d --name fcb-p2p -p 12346:12346 \
-  -e PB_P2P_ADMIN_PASSWORD=$(openssl rand -hex 16) \
-  ghcr.io/pigeonbox/p2p:latest
-```
-
-源码构建：
-
-```bash
-make build && ./bin/p2pd            # 服务端:12346(HTTP/WS/反射器)+12347(中继,默认关)
-make smoke                          # 冒烟:注册/公告/解析/信令/直传回环全流程
-```
-
-## 设备直传（p2pc，M3+）
-
-支持多文件/目录、断点续传、可选 zstd 压缩(>1MB 自动)、逐文件授权、
-大文件多流并行、先通后优(中继先行+后台打洞升级直连)与 IPv6 双栈。
-
-```bash
-# 发送方(自动生成口令 XXXX-XXXX-XXXX 并等待对方取走)
-p2pc send 报告.pdf --registry http://p2p.example.com:12346
-
-# 接收方(输入同一口令,文件直连下载到当前目录)
-p2pc recv XXXX-XXXX-XXXX --registry http://p2p.example.com:12346
-
-# 接收方亦可经 env 传码(v0.6.2 起):`recv -` 从 PB_P2P_CODE 读口令,
-# argv 不留码——同机 `ps` 看不到口令,适合共享主机/CI 环境
-PB_P2P_CODE=XXXX-XXXX-XXXX p2pc recv - --registry http://p2p.example.com:12346
-
-# 程序调用方(v0.6.3 起):--json 输出 NDJSON 事件流(send/recv 均支持;
-# recv 下强制非交互;缺省纯文本不变)
-p2pc send 报告.pdf --json
-# {"event":"code","code":"XXXX-XXXX-XXXX"}
-# {"event":"done","kind":"send"}
-```
-
-流程：节点注册+口令公告 → WS 信令配对（接收方与 resolve 源身份交叉核对）→ PAKE（口令派生会话密钥）→ 候选地址交换（PAKE 派生密钥加密）→ **UDP 同时开洞**（反射器提供公网映射；成功走 QUIC 指纹钉定 mTLS 直连）→ 失败回落**加密中继**（12347，令牌配对+限速）→ AEAD 消息传输（meta/ready/chunk/final，断点续传）→ sha256 全量校验。服务端全程只见密文。
-
-### 网页模式（p2pc-web）
+## 网页模式（p2pc-web）
 
 面向无 webkit2gtk-4.1 的老底座桌面（统信 UOS V20 全系 / 银河麒麟 V10 SP1 等）的浏览器版客户端：单个纯静态二进制，本机起回环 HTTP 服务，浏览器即界面——设备直传收发（拖放上传/大字口令一键复制/传输进度与速度实时可视化/经中继·直连标识）、浏览器直下链接分享、文件柜快捷入口（内置 p2p，与 p2pc 同协议，破坏性变更双端须同版——当前为协议 v4）。
-
-```bash
-./p2pc-web-x86_64-unknown-linux-gnu                       # 默认 127.0.0.1:12348,自动开浏览器
-./p2pc-web-x86_64-unknown-linux-gnu --out ~/下载 --no-open # 另有 --addr --max-upload --relay --no-punch
-```
 
 安全：启动生成随机令牌（进入须用启动打印的完整地址），回环部署校验 Host 头防 DNS rebinding；上传流式落临时目录（保留原始文件名给对端），传输完即清理。六平台二进制随 Release 发布（资产名 `p2pc-web-<triple>`）。
 
@@ -115,14 +129,7 @@ p2pc send 报告.pdf --json
 | `PB_P2P_STORE_SNAPSHOT_PATH` | — | 快照文件路径（空=纯内存；设置后周期+停机落盘、重启恢复） |
 | `PB_P2P_METRICS_STRICT` | `false` | true=未配置管理口令时 `/metrics` 直接 404（公共部署加固） |
 | `PB_P2P_LOG_LEVEL` | `info` | debug / info / warn / error |
-| `PB_P2P_SERVER_TLS_CERT/_KEY` | — | HTTP/WS 信令 TLS(成对配置) |
-| `PB_P2P_STORE_SNAPSHOT_PATH` | — | 公告快照持久化(重启消除失联窗口) |
-| `PB_P2P_METRICS_STRICT` | `false` | 未配管理口令时 /metrics 404(公共部署加固) |
 | `PB_P2P_CODE` | — | p2pc 客户端(v0.6.2 起):`p2pc recv -` 从 env 读取口令,argv 不留码,防同机 ps 可见 |
-
-客户端多源:`PB_P2P_REGISTRIES` 未设时可用 `--registries`(逗号分隔);
-`--registry` 传裸域名自动走 DNS SRV(`_p2pc._tcp.<域>`)发现。公共节点
-运营(部署/DNS/容量/滥用治理)见 [docs/PUBLIC-NODES.md](./docs/PUBLIC-NODES.md)。
 
 ## API（v1）
 
@@ -137,7 +144,7 @@ p2pc send 报告.pdf --json
 | `GET /v1/directory` | **在线名录（2026-10-14）**：opt-in 可发现节点列表 `{nodes: [{node_id, name, url, box_pub, online_since}]}`，零敏感（无口令/房间信息） |
 | `POST /v1/mailbox/{to_node}` | **邀请信箱（2026-10-14）**：密封邀请投递 `{from, nonce, boxed}`——纯密文，p2pd 不验内容；TTL 15min / 每箱 ≤10 条 / 单条 ≤4KB |
 | `GET /v1/mailbox/{to_node}` | 弹出全部密封条目（**取后即删**；窃取=拒绝服务非泄密，收端开箱验真） |
-| `WS /v1/channel/{hash}` | **信令信道（M3）**：同 hash 双方配对，转发不透明握手帧（见下节契约） |
+| `WS /v1/channel/{hash}` | **信令信道**：同 hash 双方配对，转发不透明握手帧（见下节契约） |
 | `GET /health` · `GET /metrics` | 健康检查（显式 GET）/ Prometheus 指标 |
 | `GET/DELETE /v1/admin/*` | 统计/列表/强制下线（Bearer 管理口令） |
 
@@ -157,7 +164,7 @@ p2pc send 报告.pdf --json
 
 `ts` 为 unix 秒，允许 ±300s 偏移。参考实现见 [scripts/smokegen](./scripts/smokegen)（生态侧已由 core `federation` 域服务封装）。
 
-## 信令信道协议（M3）
+## 信令信道协议
 
 口令即房间号：发送方设备与接收方以**同一口令的 SHA-256** 接入 `WS /v1/channel/{code_hash}`，服务端按到达顺序配对（首个收 `waiting`，第二个配对成功双方各收 `paired`），之后在两 peer 间转发不透明帧。服务端职责止步于配对+转发+治理；PAKE/打洞/传输全部在对等端完成。
 
@@ -209,10 +216,10 @@ p2pc send 报告.pdf --json
 | [pigeonbox](https://github.com/pigeonbox/pigeonbox) | 装配 hub：go.work + 文档 + 部署清单 |
 | [contracts](https://github.com/pigeonbox/contracts) · [core](https://github.com/pigeonbox/core) | 契约层 · 业务核心库（`federation` 域服务对接本服务） |
 | [server](https://github.com/pigeonbox/server) · [frontend](https://github.com/pigeonbox/frontend) | 独立部署壳 · Web 前端 |
-| [fnos](https://github.com/pigeonbox/fnos) · [desktop](https://github.com/pigeonbox/desktop) | 飞牛 fnOS 适配 · 桌面客户端（M3 直传对等端） |
+| [fnos](https://github.com/pigeonbox/fnos) · [desktop](https://github.com/pigeonbox/desktop) | 飞牛 fnOS 适配 · 桌面客户端（直传对等端） |
 | [charts](https://github.com/pigeonbox/charts) | Kubernetes Helm Chart |
 
-依赖方向：`server / fnos / frontend → core → contracts`；p2p 为叶子仓，业务链零生态依赖（stdlib net/http，无 Hertz，CI 守卫强制），不在依赖链上。唯一允许的地基层依赖是 [kit](https://github.com/pigeonbox/kit)（共享工具库，本身零生态依赖，依赖方向恒为 p2p → kit 单向无环；2026-10-05 起按键限流器采用 kit/ratelimit）。
+依赖方向：`server / fnos / frontend → core → contracts`；p2p 为叶子仓，业务链零生态依赖（stdlib net/http，无 Hertz，CI 守卫强制），不在依赖链上。唯一允许的地基层依赖是 [oekit](https://github.com/oekit)（pkg/concurrency 等微库矩阵，接替已归档的 kit；依赖方向恒为 p2p → oekit 单向无环）。
 
 ## License
 

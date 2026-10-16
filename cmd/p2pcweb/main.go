@@ -118,7 +118,7 @@ func runServer(o *options) error {
 	}
 
 	url := fmt.Sprintf("http://%s/?t=%s", net.JoinHostPort(displayHost(host), port), token)
-	logf("PigeonBox 直传·网页模式 %s\n  界面:     %s\n  接收目录: %s\n  退出:     Ctrl+C（或关闭终端）",
+	logf("PigeonBeam 信鸽直传·网页模式 %s\n  界面:     %s\n  接收目录: %s\n  退出:     Ctrl+C（或关闭终端）",
 		version.Version, url, s.outDir)
 	if !o.noOpen {
 		go openBrowser(url)

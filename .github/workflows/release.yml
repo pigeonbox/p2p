@@ -92,7 +92,7 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" out/p2pc-* --repo "$GITHUB_REPOSITORY" --clobber || {
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
               --title "p2p $GITHUB_REF_NAME" \
-              --notes "联邦注册中心(p2pd)+设备直传客户端(p2pc / p2pc-web 网页模式)。镜像见 ghcr.io/pigeonbox/p2p" \
+              --notes "PigeonBeam(信鸽直传):设备直传客户端 p2pc / p2pc-web 网页模式 + 联邦注册中心 p2pd。镜像见 ghcr.io/pigeonbox/p2p;产品定位见 docs/PRODUCT.md" \
               && gh release upload "$GITHUB_REF_NAME" out/p2pc-* --repo "$GITHUB_REPOSITORY";
           }
 
