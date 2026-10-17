@@ -21,7 +21,7 @@ import (
 	relayPkg "github.com/pigeonbox/p2p/internal/relay"
 
 	"github.com/oekit/concurrency/async"
-	"github.com/oekit/logx/shutdown"
+	"github.com/oekit/core/lifecycle"
 	"github.com/oekit/core/version"
 	"github.com/pigeonbox/p2p/internal/config"
 	"github.com/pigeonbox/p2p/internal/registry"
@@ -98,9 +98,9 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				// 单轮 panic 收编（RunSafe→全局 slog handler）：清扫炸掉=
+				// 单轮 panic 收编（RunSafeLabeled→全局 slog handler）：清扫炸掉=
 				// 过期租约永不回收，注册表只增不减
-				async.RunSafe(func() {
+				async.RunSafeLabeled("p2pd-sweep", func() {
 					nodes, announces := svc.Sweep(context.Background())
 					// 刷新活跃量仪表(2026-10-05 审计运维项:此前仪表未接线恒 0)
 					if liveNodes, liveAnnounces, err := svc.Stats(context.Background()); err == nil {
@@ -120,8 +120,8 @@ func main() {
 		if err != nil {
 			logger.Warn("UDP 反射器启动失败(客户端打洞将退化为仅 LAN/中继)", "err", err)
 		} else {
-			// GoSafe:反射器 panic 不静默打死进程,走全局 slog handler 可查
-			async.GoSafe(func() { reflectPkg.Serve(ctx, udpConn, logger) })
+			// GoSafeLabeled:反射器 panic 不静默打死进程,走全局 slog handler 带标签可查
+			async.GoSafeLabeled("p2pd-reflector", func() { reflectPkg.Serve(ctx, udpConn, logger) })
 		}
 	}
 
@@ -132,8 +132,8 @@ func main() {
 			logger.Error("中继监听失败", "port", cfg.Relay.Port, "err", err)
 			os.Exit(1)
 		}
-		// GoSafe:中继 panic 走全局 slog handler(注册面仍存活,可诊断不丢栈)
-		async.GoSafe(func() {
+		// GoSafeLabeled:中继 panic 走全局 slog handler 带标签(注册面仍存活,可诊断不丢栈)
+		async.GoSafeLabeled("p2pd-relay", func() {
 			p := relayPkg.Params{
 				BytesPerSec:    cfg.Relay.MbpsPerChannel * 1_000_000 / 8,
 				MaxWaiting:     cfg.Relay.MaxWaiting,
@@ -161,9 +161,9 @@ func main() {
 				case <-ctx.Done():
 					return
 			case <-t.C:
-				// 单轮 panic 收编（RunSafe→全局 slog handler）：快照协程炸掉=
+				// 单轮 panic 收编（RunSafeLabeled→全局 slog handler）：快照协程炸掉=
 				// 状态不再持久化，重启即丢全部注册数据
-				async.RunSafe(func() {
+				async.RunSafeLabeled("p2pd-snapshot", func() {
 					if err := saveSnapshot(memStore, cfg.Store.SnapshotPath); err != nil {
 						logger.Warn("快照落盘失败", "path", cfg.Store.SnapshotPath, "err", err)
 					}
@@ -209,7 +209,7 @@ func main() {
 
 	// 优雅停机编排(kit/shutdown):teardown(取消根 ctx→清扫/反射器/中继/快照退出)
 	// 先于 http 排水执行;每个资源独立超时预算,panic 隔离不中断剩余清理。
-	mgr := shutdown.New(10 * time.Second)
+	mgr := lifecycle.New(10 * time.Second)
 	mgr.AddTeardown(stop)
 	if cfg.Store.SnapshotPath != "" {
 		mgr.Add("snapshot", func(context.Context) error {

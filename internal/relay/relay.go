@@ -103,8 +103,8 @@ func Serve(ctx context.Context, ln net.Listener, p Params) error {
 			}
 			return fmt.Errorf("relay accept: %w", err)
 		}
-		// GoSafe:单连接 panic 不打死中继进程，只断该连接（每连接处理互相隔离）
-		async.GoSafe(func() { s.handle(ctx, conn) })
+		// GoSafeLabeled:单连接 panic 不打死中继进程，只断该连接（每连接处理互相隔离）
+		async.GoSafeLabeled("relay-conn", func() { s.handle(ctx, conn) })
 	}
 }
 
@@ -164,8 +164,8 @@ func (s *server) handle(ctx context.Context, conn net.Conn) {
 		var wg sync.WaitGroup
 		lim := newBucket(s.bytesPerSec)
 		wg.Add(2)
-		async.GoSafe(func() { defer wg.Done(); pipe(ctx, conn, peer, lim) })
-		async.GoSafe(func() { defer wg.Done(); pipe(ctx, peer, conn, lim) })
+		async.GoSafeLabeled("relay-pipe", func() { defer wg.Done(); pipe(ctx, conn, peer, lim) })
+		async.GoSafeLabeled("relay-pipe", func() { defer wg.Done(); pipe(ctx, peer, conn, lim) })
 		wg.Wait()
 		_ = conn.Close()
 		_ = peer.Close()

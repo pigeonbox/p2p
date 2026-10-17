@@ -139,10 +139,10 @@ func (m *Manager) Start(kind, registry, code, path, outDir, relay string, noPunc
 	m.mu.Unlock()
 
 	m.broadcast(Event{Type: "code", Code: code})
-	// 三协程 GoSafe:panic 走全局 panic handler,不静默打死 p2pcweb
-	async.GoSafe(func() { m.pipe(stdout) })
-	async.GoSafe(func() { m.pipe(stderr) })
-	async.GoSafe(func() { m.wait() })
+	// 三协程 GoSafeLabeled:panic 走全局 panic handler 带标签,不静默打死 p2pcweb
+	async.GoSafeLabeled("p2pcweb-pipe-stdout", func() { m.pipe(stdout) })
+	async.GoSafeLabeled("p2pcweb-pipe-stderr", func() { m.pipe(stderr) })
+	async.GoSafeLabeled("p2pcweb-wait", func() { m.wait() })
 	return nil
 }
 

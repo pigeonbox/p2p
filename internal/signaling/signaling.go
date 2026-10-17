@@ -258,9 +258,9 @@ func (h *Hub) janitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			// 单轮 panic 收编（RunSafe→全局 panic handler）：会话清扫炸掉=
+			// 单轮 panic 收编（RunSafeLabeled→全局 panic handler）：会话清扫炸掉=
 			// 过期会话永不回收，信令表只增不减
-			async.RunSafe(func() {
+			async.RunSafeLabeled("signaling-janitor", func() {
 				now := h.now()
 				h.mu.Lock()
 				var expired []*session
