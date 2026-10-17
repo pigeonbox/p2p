@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/oekit/concurrency/async"
 
 	"github.com/pigeonbox/p2p/internal/registry"
 )
@@ -257,21 +258,25 @@ func (h *Hub) janitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			now := h.now()
-			h.mu.Lock()
-			var expired []*session
-			for hash, sess := range h.sessions {
-				if now.Sub(sess.createdAt) > h.cfg.SessionTTL {
-					delete(h.sessions, hash)
-					expired = append(expired, sess)
+			// 单轮 panic 收编（RunSafe→全局 panic handler）：会话清扫炸掉=
+			// 过期会话永不回收，信令表只增不减
+			async.RunSafe(func() {
+				now := h.now()
+				h.mu.Lock()
+				var expired []*session
+				for hash, sess := range h.sessions {
+					if now.Sub(sess.createdAt) > h.cfg.SessionTTL {
+						delete(h.sessions, hash)
+						expired = append(expired, sess)
+					}
 				}
-			}
-			h.mu.Unlock()
-			for _, sess := range expired {
-				h.metrics.SignalingSessions(-1)
-				sess.broadcast(serverFrame{Type: "error", Message: "会话超时"})
-				sess.closeAll()
-			}
+				h.mu.Unlock()
+				for _, sess := range expired {
+					h.metrics.SignalingSessions(-1)
+					sess.broadcast(serverFrame{Type: "error", Message: "会话超时"})
+					sess.closeAll()
+				}
+			})
 		}
 	}
 }

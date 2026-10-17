@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/oekit/concurrency/async"
+
 	"github.com/pigeonbox/p2p/internal/client"
 )
 
@@ -137,9 +139,10 @@ func (m *Manager) Start(kind, registry, code, path, outDir, relay string, noPunc
 	m.mu.Unlock()
 
 	m.broadcast(Event{Type: "code", Code: code})
-	go m.pipe(stdout)
-	go m.pipe(stderr)
-	go m.wait()
+	// 三协程 GoSafe:panic 走全局 panic handler,不静默打死 p2pcweb
+	async.GoSafe(func() { m.pipe(stdout) })
+	async.GoSafe(func() { m.pipe(stderr) })
+	async.GoSafe(func() { m.wait() })
 	return nil
 }
 

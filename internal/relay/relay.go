@@ -103,7 +103,8 @@ func Serve(ctx context.Context, ln net.Listener, p Params) error {
 			}
 			return fmt.Errorf("relay accept: %w", err)
 		}
-		go s.handle(ctx, conn)
+		// GoSafe:单连接 panic 不打死中继进程，只断该连接（每连接处理互相隔离）
+		async.GoSafe(func() { s.handle(ctx, conn) })
 	}
 }
 
