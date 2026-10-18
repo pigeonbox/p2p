@@ -8,10 +8,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -88,7 +90,8 @@ func usage() {
   配对码模式   --pair 亮 4 位数字定时码(5 分钟失效,对方输入即连,免抄 12 位
                口令);recv/send 侧 4-8 位纯数字自动按配对码认领(反向配对的
                对端),查无此码回退口令解析,--pair 强制只走配对;接受门缺省
-               人工确认,--yes/--json 自动
+               人工确认,--yes/--json 自动;--pair-stdin 走 stdin 单行裁决
+               (y/n,EOF=拒绝;desktop/p2px 等程序调用方转发裁决)
   传输优先 UDP 打洞直连,失败自动回落中继(先通后优:中继上起传,后台打洞
   成功后文件边界自动升级直连;中继需服务端 relay.enabled=true,现默认开)
   目录会整棵递归;接收方可逐文件授权(--yes 跳过交互全部接受)
@@ -123,6 +126,7 @@ func send(args []string) {
 	jsonFlag := fs.Bool("json", false, "NDJSON 事件流输出(机器可读:code/pair_code/pair_request/done/error)")
 	pairMode := fs.Bool("pair", false, "配对码模式:亮 4 位定时码,对方输入码即连(免抄口令)")
 	yes := fs.Bool("yes", false, "自动接受敲门请求(跳过接受门问询)")
+	pairStdin := fs.Bool("pair-stdin", false, "接受门改走 stdin 单行协议(y/n,EOF=拒绝;供 desktop/p2px 转发裁决,优先于 --yes/--json 自动语义)")
 	inviteTo := fs.String("invite-to", "", "发送后向该名录对端投递密封邀请(node_id)")
 	inviteNote := fs.String("invite-note", "", "邀请附言")
 	inviteName := fs.String("invite-name", "", "邀请显示名(缺省主机名)")
@@ -158,7 +162,7 @@ func send(args []string) {
 
 	// 配对码模式:亮码→接受门→兑换→传输,全部在 SendPaired 内编排
 	if *pairMode {
-		if _, err := c.SendPaired(paths, pairCallbacks(*yes || jsonOut)); err != nil {
+		if _, err := c.SendPaired(paths, pairCallbacks(*yes, *pairStdin)); err != nil {
 			failJSON(err)
 		}
 		clearUIProgress()
@@ -180,7 +184,7 @@ func send(args []string) {
 	// 敲码发送(反向配对的发送侧):4-8 位纯数字先按配对码认领;查无此码回退
 	// 口令直传(自定义短口令兼容,与 recv 侧对称)
 	if client.IsPairingCode(code) {
-		if _, perr := c.SendByClaim(code, paths, pairCallbacks(false)); perr == nil {
+		if _, perr := c.SendByClaim(code, paths, pairCallbacks(false, false)); perr == nil {
 			clearUIProgress()
 			if jsonOut {
 				emitEvent("done", map[string]any{"kind": "send"})
@@ -296,6 +300,7 @@ func receive(args []string) {
 	yes := fs.Bool("yes", false, "全部接受(跳过逐文件交互授权)")
 	jsonFlag := fs.Bool("json", false, "NDJSON 事件流输出(机器可读:done/error;强制非交互)")
 	pairForce := fs.Bool("pair", false, "配对码语义:无位置参数=反向亮码等待对方推送;带 4-8 位数字=只按配对码处理(不做口令回退)")
+	pairStdin := fs.Bool("pair-stdin", false, "接受门改走 stdin 单行协议(y/n,EOF=拒绝;供 desktop/p2px 转发裁决,优先于 --yes/--json 自动语义)")
 	if err := parseArgs(fs.FlagSet, args); err != nil {
 		os.Exit(2)
 	}
@@ -321,7 +326,7 @@ func receive(args []string) {
 
 	// 反向配对:接收方亮码,对方敲码后推送文件过来
 	if *pairForce && fs.NArg() == 0 {
-		files, perr := c.ReceivePairedAsCreator(out, pairCallbacks(*yes))
+		files, perr := c.ReceivePairedAsCreator(out, pairCallbacks(*yes, *pairStdin))
 		finishRecv(files, perr)
 		return
 	}
@@ -337,7 +342,7 @@ func receive(args []string) {
 	}
 	// 配对码:4-8 位纯数字先按配对码认领;查无此码(非 --pair 强制)回退口令解析
 	if client.IsPairingCode(code) || *pairForce {
-		files, perr := c.ReceivePaired(code, out, pairCallbacks(*yes))
+		files, perr := c.ReceivePaired(code, out, pairCallbacks(*yes, *pairStdin))
 		if perr == nil {
 			finishRecv(files, nil)
 			return
@@ -448,8 +453,10 @@ func chooseInteractively(mf client.Manifest) []client.ManifestEntry {
 }
 
 // pairCallbacks 配对编排回调（send 亮码/recv 敲码/recv 反向亮码三形态共用）。
-// JSON 模式恒自动接受（接受门语义经 pair_request 事件上抛，由 supervisor 自行处置）。
-func pairCallbacks(autoAccept bool) client.PairCallbacks {
+// 接受门三形态：stdinGate=true 走 stdin 单行协议(y/n,EOF=拒绝——desktop/p2px
+// 等程序调用方转发裁决)；否则 jsonOut 恒自动接受（语义经 pair_request 事件
+// 上抛）；再否则 autoAccept 自动、无旗标走 TTY 问询。
+func pairCallbacks(autoAccept, stdinGate bool) client.PairCallbacks {
 	return client.PairCallbacks{
 		OnCode: func(code string, ttl time.Duration) {
 			if jsonOut {
@@ -462,6 +469,16 @@ func pairCallbacks(autoAccept bool) client.PairCallbacks {
 		OnRequest: func(req client.PairRequestView) bool {
 			if jsonOut {
 				emitEvent("pair_request", map[string]any{"from": req.NodeID, "name": req.Name})
+			} else {
+				fmt.Printf("设备 %s（%s…）请求连接\n", pairPeerName(req), shortNodeID(req.NodeID))
+			}
+			if stdinGate {
+				if !jsonOut {
+					fmt.Println("等待裁决（stdin 单行 y/n，EOF=拒绝）…")
+				}
+				return readGateDecision(os.Stdin)
+			}
+			if jsonOut {
 				return true
 			}
 			if autoAccept {
@@ -490,6 +507,31 @@ func pairCallbacks(autoAccept bool) client.PairCallbacks {
 			}
 		},
 	}
+}
+
+// readGateDecision stdin 单行裁决：持久行读跨多次裁决复用（拒绝→重铸→新
+// 请求各读一行），y/空行=接受，其余/EOF=拒绝（fail closed）。与 p2pcweb
+// 子模式 stdin 协议同语义。
+func readGateDecision(r io.Reader) bool {
+	if gateReader == nil {
+		gateReader = bufio.NewReader(r)
+	}
+	line, err := gateReader.ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		return false // EOF=拒绝
+	}
+	return gateDecision(line)
+}
+
+var gateReader *bufio.Reader
+
+// gateDecision 单行判定（纯函数，可测）：空/y/yes=接受，其余=拒绝。
+func gateDecision(line string) bool {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "y", "yes":
+		return true
+	}
+	return false
 }
 
 // askApprove 接受门问询：回车/y 接受，其余拒绝（管道 stdin 无输入=自动接受，

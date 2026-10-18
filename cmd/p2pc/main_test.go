@@ -90,3 +90,18 @@ func TestJSONEventShape(t *testing.T) {
 		t.Fatalf("非 JSON 模式应静默: %q", out)
 	}
 }
+
+func TestGateDecision(t *testing.T) {
+	accept := []string{"", "y", "Y", "yes", "YES\n", "y\n"}
+	for _, in := range accept {
+		if !gateDecision(in) {
+			t.Fatalf("%q 应接受", in)
+		}
+	}
+	deny := []string{"n", "n\n", "no", "Y n", "随便"}
+	for _, in := range deny {
+		if gateDecision(in) {
+			t.Fatalf("%q 应拒绝", in)
+		}
+	}
+}
