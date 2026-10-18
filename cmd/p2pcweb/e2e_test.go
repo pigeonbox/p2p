@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -83,7 +84,8 @@ func newP2PFixture(t *testing.T) *p2pFixture {
 		MaxNodeTTL: cfg.Registration.MaxNodeTTL, MaxAnnounces: cfg.Announce.MaxPerNode,
 		MaxAnnounceTTL: cfg.Announce.MaxTTL,
 	})
-	srv := server.New(ctx, server.Params{Service: svc, Config: cfg, Version: "test"})
+	pairingSvc := registry.NewPairingService(ctx, registry.PairingConfig{}, svc)
+	srv := server.New(ctx, server.Params{Service: svc, Pairing: pairingSvc, Config: cfg, Version: "test"})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -254,4 +256,145 @@ func decodeField(t *testing.T, body, field string) string {
 		return ""
 	}
 	return rest[:j]
+}
+
+// TestWebPairSendToClientRecv 配对码全链路：网页上传 → send-pair 子模式亮码
+// → pair_code/pair_request 事件回流 → 网页批准(stdin 管道) → client 库敲码接收。
+// 断言 secret 不出现在任何事件里（父进程/网页只见 4 位配对码）。
+func TestWebPairSendToClientRecv(t *testing.T) {
+	f := newP2PFixture(t)
+
+	payload := make([]byte, 1<<20)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	fileName := "pair e2e 样例.bin"
+
+	s := &Server{
+		token:     "tk",
+		loopback:  true,
+		maxUpload: 8 << 20,
+		outDir:    t.TempDir(),
+		relay:     f.relay,
+		noPunch:   true, // 确定性走 fixture 中继,同 TestWebSendToClientRecv
+		cfg:       newCfgStoreAt(filepath.Join(t.TempDir(), "c.json")),
+		mgr:       NewManager(),
+	}
+	ts := httptest.NewServer(s.routes())
+	defer ts.Close()
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(ts.URL, "http://"))
+	s.port = port
+
+	events := s.mgr.Subscribe()
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", fileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST",
+		"/api/pair/send?registry="+url.QueryEscape(f.base), &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	s.handlePairSend(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("配对上传期望 202, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 等亮码事件
+	var pairCode string
+	deadline := time.After(30 * time.Second)
+	for pairCode == "" {
+		select {
+		case ev := <-events:
+			if ev.Type == "pair_code" {
+				pairCode = ev.Code
+				if len(ev.Code) != 4 {
+					t.Fatalf("配对码应为 4 位, 实际 %q", ev.Code)
+				}
+				if ev.TTL <= 0 || ev.TTL > 600 {
+					t.Fatalf("配对码 TTL 异常: %d", ev.TTL)
+				}
+			}
+		case <-deadline:
+			t.Fatal("30s 内未收到 pair_code 事件")
+		}
+	}
+
+	// 接收方：client 库敲码（OnRequest 缺省=自动接受,本用例接受门在网页侧）
+	recvDir := t.TempDir()
+	recvErr := make(chan error, 1)
+	go func() {
+		rc, err := client.New(client.Options{
+			Registry:    f.base,
+			NodeKeyPath: filepath.Join(t.TempDir(), "recv.key"),
+			RelayAddr:   f.relay,
+			PunchBudget: 3 * time.Second,
+			Quiet:       true,
+		})
+		if err != nil {
+			recvErr <- err
+			return
+		}
+		files, err := rc.ReceivePaired(pairCode, recvDir, client.PairCallbacks{})
+		if err != nil {
+			recvErr <- err
+			return
+		}
+		if len(files) != 1 || filepath.Base(files[0]) != fileName {
+			recvErr <- fmt.Errorf("落盘不符: %v", files)
+			return
+		}
+		got, rerr := os.ReadFile(files[0])
+		if rerr != nil || !bytes.Equal(got, payload) {
+			recvErr <- fmt.Errorf("内容不一致: %v", rerr)
+			return
+		}
+		recvErr <- nil
+	}()
+
+	// 等敲门请求事件 → 网页批准
+	sawRequest := false
+	var childLogs []string
+	for {
+		select {
+		case ev := <-events:
+			switch ev.Type {
+			case "pair_request":
+				sawRequest = true
+				if strings.Contains(ev.Name, "  ") {
+					t.Fatalf("显示名未压空白: %q", ev.Name)
+				}
+				if err := s.mgr.ApprovePair(true); err != nil {
+					t.Fatalf("批准转发: %v", err)
+				}
+			case "pair_code":
+				t.Fatal("拒绝/过期路径不应重铸(本用例直接接受)")
+			case "log":
+				childLogs = append(childLogs, ev.Line)
+			case "exit":
+				if ev.Exit != 0 {
+					t.Fatalf("发送侧退出码 %d（err=%s; child 日志=%v）", ev.Exit, ev.Err, childLogs)
+				}
+				if !sawRequest {
+					t.Fatal("全程未收到 pair_request 事件")
+				}
+				if err := <-recvErr; err != nil {
+					t.Fatalf("接收端: %v", err)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("30s 内未完成配对传输")
+		case err := <-recvErr:
+			t.Fatalf("接收端提前失败: %v", err)
+		}
+	}
 }

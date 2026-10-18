@@ -540,6 +540,14 @@ func (c *Client) Send(paths []string, code string) (string, error) {
 		}
 	}()
 
+	code, err = c.sendChannel(paths, code)
+	sendOK = err == nil
+	return code, err
+}
+
+// sendChannel 信道段(公告/配对就绪后):接入→协商→PAKE→候选→承载→传输。
+// 配对码模式以兑换到的 secret 为 code 复用本段——数据面零协议分支。
+func (c *Client) sendChannel(paths []string, code string) (string, error) {
 	ch, err := joinChannel(c.opt.Registry, code, c.id, 10*time.Minute)
 	if err != nil {
 		return "", err
@@ -588,7 +596,6 @@ func (c *Client) Send(paths []string, code string) (string, error) {
 		return code, err
 	}
 	c.log.Info("发送完成", "code", code, "files", n)
-	sendOK = true
 	return code, nil
 }
 
@@ -610,16 +617,23 @@ func (c *Client) Receive(code, dir string) ([]string, error) {
 	if winner == nil {
 		return nil, fmt.Errorf("解析: 全部注册中心均无该口令")
 	}
-	dereg := c.setupNode(winner)
-	defer dereg()
+	return c.receiveFrom(winner.base, code, dir, senderID)
+}
 
-	ch, err := joinChannel(winner.base, code, c.id, 10*time.Minute)
+// receiveFrom 解析钉定后的信道段(接入→身份核对→协商→PAKE→候选→承载→接收)。
+// 配对码模式传入 claim 兑换到的 creator 作为钉定来源,跳过公告解析。
+func (c *Client) receiveFrom(regBase, code, dir, expectedPeer string) ([]string, error) {
+	reg := newRegistryAPI(regBase)
+	d := c.setupNode(reg)
+	defer d()
+
+	ch, err := joinChannel(regBase, code, c.id, 10*time.Minute)
 	if err != nil {
 		return nil, err
 	}
 	defer ch.close()
-	if ch.peerID != senderID {
-		return nil, fmt.Errorf("身份核对失败: 信道对端 %s ≠ 公告节点 %s", ch.peerID, senderID)
+	if ch.peerID != expectedPeer {
+		return nil, fmt.Errorf("身份核对失败: 信道对端 %s ≠ 预期节点 %s", ch.peerID, expectedPeer)
 	}
 
 	if _, err := negotiateVersion(ch); err != nil {

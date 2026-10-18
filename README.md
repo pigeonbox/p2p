@@ -39,6 +39,16 @@ PB_P2P_CODE=XXXX-XXXX-XXXX p2pc recv -
 p2pc send 报告.pdf --json
 # {"event":"code","code":"XXXX-XXXX-XXXX"}
 # {"event":"done","kind":"send"}
+
+# 配对码模式(2026-10-18):4 位定时码,5 分钟失效,免抄 12 位口令
+p2pc send 报告.pdf --pair
+# 配对码: 4823（5m0s 内有效）
+# 设备 NAS-客厅（c0a45335…）请求连接，接受? [Y/n]
+p2pc recv 4823 --registry http://home.enjoye.top:56788
+
+# 反向:接收方亮码(对方输码推送过来)
+p2pc recv --pair --registry http://home.enjoye.top:56788
+# 对方: p2pc send 报告.pdf --code 5566
 ```
 
 CLI 缺省 registry 是 `http://127.0.0.1:12346`（本机自建场景）；`--registry` 传裸域名自动走 DNS SRV（`_p2pc._tcp.<域>`）发现，多源 failover 用 `--registries`（或 `PB_P2P_REGISTRIES`）。
@@ -146,6 +156,10 @@ make smoke                          # 冒烟:注册/公告/解析/信令/直传�
 | `GET /v1/directory` | **在线名录（2026-10-14）**：opt-in 可发现节点列表 `{nodes: [{node_id, name, url, box_pub, online_since}]}`，零敏感（无口令/房间信息） |
 | `POST /v1/mailbox/{to_node}` | **邀请信箱（2026-10-14）**：密封邀请投递 `{from, nonce, boxed}`——纯密文，p2pd 不验内容；TTL 15min / 每箱 ≤10 条 / 单条 ≤4KB |
 | `GET /v1/mailbox/{to_node}` | 弹出全部密封条目（**取后即删**；窃取=拒绝服务非泄密，收端开箱验真） |
+| `POST /v1/pair` | **配对码（2026-10-18）**：亮码方建会话 `{node_id, secret, ts, sig}` → `{code(4位), ttl(秒)}`；secret 为高熵会话口令（≥12 字节），服务端持有（信任模型见安全模型） |
+| `POST /v1/pair/claim` | 敲门方凭码换会话 `{node_id, code, claim_id, ts, sig}` → pending（带 `expires_in`）/ granted（一次性发放 `{secret, creator}`）；per-IP 限流 ≈30/min |
+| `POST /v1/pair/approve` | 亮码方裁决 `{node_id, code, decision(accept/deny), claimer, ts, sig}`；deny 即烧码 |
+| `POST /v1/pair/requests` | 亮码方拉取活跃会话与待确认请求 `{sessions: [{code, expires_in, requests: [{node_id, name}]}]}` |
 | `WS /v1/channel/{hash}` | **信令信道**：同 hash 双方配对，转发不透明握手帧（见下节契约） |
 | `GET /health` · `GET /metrics` | 健康检查（显式 GET）/ Prometheus 指标 |
 | `GET/DELETE /v1/admin/*` | 统计/列表/强制下线（Bearer 管理口令） |
@@ -160,6 +174,10 @@ make smoke                          # 冒烟:注册/公告/解析/信令/直传�
 公告:        node_id | code_hash | expires_at | size_hint | ts
 注销节点:    node_id | ts
 撤销公告:    node_id | code_hash | ts
+配对-建会话: pair-create | node_id | secret | ts                        ← 配对码（2026-10-18）
+配对-敲门:   pair-claim | node_id | code | claim_id | ts
+配对-裁决:   pair-approve | node_id | code | decision | claimer | ts
+配对-轮询:   pair-requests | node_id | ts
 ```
 
 名录扩展段（`discoverable`/`public_url`/`box_pub` 任一出现时）必须使用扩展负载签名；请求携带扩展字段但签旧负载一律 401。未携带扩展字段的注册（旧客户端）**不触碰**既有名录状态（sticky：federation 心跳与 p2pc 直传注册共写同一 node_id，不会互踩名录可见性）。`discoverable=1` 必须携带合法 `box_pub`（32 字节 X25519 公钥 hex，自 Ed25519 节点私钥 seed 推导）。
@@ -200,6 +218,36 @@ make smoke                          # 冒烟:注册/公告/解析/信令/直传�
 
 **服务端治理**（均可配置）：data 帧负载 ≤16KB · 会话 TTL 10 分钟 · 连接空闲 2 分钟 · 单节点并发会话 8 · 全局 1024；已满信道拒绝第三人（4002）。
 
+## 配对码协议（2026-10-18）
+
+4 位数字定时码替代 12 位口令的人手转抄：**配对码是「门牌号+门铃」，不是钥匙**。
+亮码方在注册中心登记高熵 secret（复用 12 位口令生成器，≈60bit），服务端签发 4 位
+码（TTL 5 分钟）；对方凭码 claim（节点签名准入），经亮码方**人工接受门**批准后
+一次性兑换 secret——此后双方走完全既有的信令信道 → PAKE → 打洞 → 传输链路，
+**wire 协议零改动**。
+
+```
+发送方(亮码)                    注册中心                         接收方(敲码)
+  │ POST /v1/pair {secret,sig}    │                                │
+  │◄────── {code:"4823",ttl:300} ─│                                │
+  │ 轮询 /v1/pair/requests …      │      输入 4823 → POST /claim   │
+  │                               │◄───── {status:"pending"} ──────│
+  │◄─ requests:{from,name} ───────│                                │
+  │ 「设备 X 请求连接 [接受]」      │  （claim 同 claim_id 轮询兑换）  │
+  │──── approve {accept} ────────►│───── {secret, creator} ───────►│
+  │  joinChannel(secret) ◄────────┼─────────► joinChannel(secret)  │
+  │        此后与既有链路逐字节相同：版本协商 → PAKE(secret) → 候选 → 打洞/中继
+```
+
+- **端点语义**：claim 首调以 `claim_id` 占 pending 位（他人抢入 409）；approve
+  accept 挂起发放、deny 即烧码；secret 一次性发放即出表，无重放窗口。
+- **客户端形态识别**：4-8 位纯数字自动按配对码认领（legacy 口令为 12 位分组建制
+  无形状冲突）；查无此码回退口令解析，`--pair` 强制只走配对。CLI `p2pc send
+  --pair`（亮码发送）/ `p2pc recv --pair`（反向亮码）/ `p2pc send <码4-8位>`（敲码
+  推送）；p2pcweb 发送页「改用 4 位配对码」开关 + 接受门卡片，接收框自动识别。
+- **降级**：`pairing.enabled=false` 或旧注册中心（无端点 404）→ 客户端明确报错
+  「不支持配对码，请使用口令直传」；旧客户端 + 新服务端完全无感（端点纯增量）。
+
 ## 安全模型
 
 - **注册中心不接触明文口令**：公告只存 `SHA-256(口令)`；解析方须持有口令才能计算哈希查询。
@@ -208,6 +256,7 @@ make smoke                          # 冒烟:注册/公告/解析/信令/直传�
 - **限流分层**：读/写/管理路径独立令牌桶，超限 429；resolve 叠加 per-hash 维度封顶（IP 池绕不过的单口令枚举闸），反代部署采信 XFF 仅限可信网段且取末段（首段可伪造）。
 - **传输协议版本协商（v3）**：配对后 PAKE 前双方显式交换协议版本，不一致给出可读错误而非密码学报错；QUIC 直传大文件多流并行（每流独立派生密钥防跨流 nonce 重用），中继/续传恒单流。
 - **信令信道准入**：WS 接入须持节点 Ed25519 签名（channel-join 负载）+ 有效租约；帧限 16KB、会话 TTL/空闲上限、单节点与全局配额——不存在匿名可占的房间。
+- **配对码信任模型（如实声明）**：4 位码只作「门牌号+门铃」——房间号与 PAKE 密码均为亮码方登记的 60bit secret，码猜中（枚举防线=claim per-IP 限流+拒绝即烧码+一次性发放+接受门）也拿不到数据面。但**注册中心持有 secret**，理论上可冒充任一端——这是服务端签发短码的固有代价（与文件柜取件码同构）；今天的 12 位口令模型里注册中心零知识、不可 MITM，对端到端信任要求最高的场景请继续使用口令直传。二期扩展点：SAS 校验（PAKE 会话密钥派生 4 位指纹，双方屏显口头比对）。
 - **中继默认开启**但非开放代理:配对须 PAKE 派生令牌,无令牌连接 60s 超时即断,另有等待槽/单 IP/带宽三重上限(先通后优:中继上起传,后台打洞成功后文件边界自动升级直连)。
 - **传输协议版本协商(v4)**:多文件 manifest 流(逐文件授权/部分接受/目录白名单消毒/zstd 压缩/单遍哈希);多注册中心按 rendezvous hashing 零协调分片,失败顺延。
 

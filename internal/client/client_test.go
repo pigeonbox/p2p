@@ -48,7 +48,8 @@ func newFixture(t *testing.T, withRelay bool) *fixture {
 		MaxNodeTTL: cfg.Registration.MaxNodeTTL, MaxAnnounces: cfg.Announce.MaxPerNode,
 		MaxAnnounceTTL: cfg.Announce.MaxTTL,
 	})
-	srv := server.New(ctx, server.Params{Service: svc, Config: cfg, Version: "test"})
+	pairingSvc := registry.NewPairingService(ctx, registry.PairingConfig{}, svc)
+	srv := server.New(ctx, server.Params{Service: svc, Pairing: pairingSvc, Config: cfg, Version: "test"})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 

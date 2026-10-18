@@ -230,14 +230,17 @@
             <div class="drop-t">拖文件到这里，或点击选择</div>
             <div class="drop-s" id="drop-limit">支持多文件 · 单文件上限 --</div>
           </div>
+          <div class="mini center" style="margin-top:8px">
+            <a href="#" id="pair-toggle">改用 4 位配对码（对方输码即连，免抄口令）</a>
+          </div>
         </div>
 
         <div id="pane-recv" class="hide">
           <div class="hrow">
-            <input id="p2p-code" class="code-in grow" placeholder="粘贴对方口令，如 7K2M-9XQW-AABB" autocomplete="off" spellcheck="false" />
+            <input id="p2p-code" class="code-in grow" placeholder="口令 7K2M-9XQW-AABB 或 4 位配对码 4823" autocomplete="off" spellcheck="false" />
             <button id="recv" class="btn">开始接收</button>
           </div>
-          <p class="mini" style="margin: 9px 2px 0;">口令由发送方提供；文件将保存到下载目录，全程端到端加密。</p>
+          <p class="mini" style="margin: 9px 2px 0;">口令/配对码由对方提供；配对码 5 分钟内有效且需对方确认。文件保存到下载目录，全程端到端加密。</p>
         </div>
 
         <div id="live" class="hide" aria-live="polite">
@@ -248,6 +251,11 @@
           <div class="code-big hide" id="code-big">
             <span id="mycode">------</span>
             <button class="btn sm ghost" id="copy-code">复制口令</button>
+          </div>
+          <div id="pair-card" class="hide" style="margin-top:8px;padding:10px 12px;border:1px solid rgba(0,0,0,.12);border-radius:10px;text-align:center">
+            <p class="mini" style="margin:0 0 8px">设备 <b id="pair-from"></b> 请求连接，是否接受？</p>
+            <button id="pair-accept" class="btn sm">接受</button>
+            <button id="pair-deny" class="btn sm ghost">拒绝</button>
           </div>
           <p class="mini center" id="live-hint" style="margin-top: 8px;"></p>
           <div class="bar" id="bar"><div class="fill" id="fill"></div></div>
@@ -372,6 +380,12 @@
     const ACTIVE = { uploading: 1, waiting: 1, paired: 1, transferring: 1 };
     function active() { return !!ACTIVE[phase]; }
 
+    // 配对码模式(2026-10-18):发送侧 4 位定时码 + 接受门;倒计时由 SSE
+    // pair_code(ttl) 驱动,批准卡由 pair_request 驱动。
+    let pairMode = false;
+    let pairTimer = null;
+    let pairDeadline = 0;
+
     function toast(msg) {
       const t = $('toast');
       t.textContent = msg;
@@ -396,7 +410,18 @@
       } else { fallback(); }
     }
 
-    $('copy-code').onclick = () => copyText(curCode, '口令已复制，发给对方吧');
+    $('copy-code').onclick = () => copyText(curCode, curCode.length === 4 ? '配对码已复制' : '口令已复制，发给对方吧');
+
+    // ── 配对码模式开关（发送侧）──
+    $('pair-toggle').onclick = e => {
+      e.preventDefault();
+      if (active()) { toast('已有直传任务进行中'); return; }
+      pairMode = !pairMode;
+      $('pair-toggle').textContent = pairMode
+        ? '改回口令发送（12 位口令，适合异步转交）'
+        : '改用 4 位配对码（对方输码即连，免抄口令）';
+      toast(pairMode ? '已切换为配对码发送' : '已切换为口令发送');
+    };
 
     // ── 标签页 / 分段 ──
     let curTab = 'p2p';
@@ -432,7 +457,7 @@
       $('ver').textContent = 'v' + (st.version || '?');
       if (st.max_upload) $('drop-limit').textContent = '支持多文件 · 单文件上限 ' + fmtBytes(st.max_upload);
       if (st.busy) {
-        role = st.role === 'recv' ? 'recv' : 'send';
+        role = (st.role === 'recv' || st.role === 'recv-pair') ? 'recv' : 'send';
         enterLive();
         setPhase('waiting');
         if (st.code) showCode(st.code);
@@ -467,11 +492,53 @@
 
     function onEvent(p) {
       if (p.type === 'code') { enterLive(); showCode(p.code); setPhase('waiting'); }
+      else if (p.type === 'pair_code') { showPairCode(p.code, p.ttl); }
+      else if (p.type === 'pair_request') showPairRequest(p);
+      else if (p.type === 'pair_state') onPairState(p.line);
       else if (p.type === 'progress') onProgress(p.got, p.total);
       else if (p.type === 'log') { appendLog(p.line); deriveStage(p.line); }
       else if (p.type === 'exit') finish(p);
       else if (p.type === 'state') { if (!p.busy && active()) resetAll(); }
     }
+
+    // ── 配对码事件 ──
+    function showPairCode(code, ttl) {
+      showCode(code);
+      pairDeadline = ttl > 0 ? Date.now() + ttl * 1000 : 0;
+      tickPairCountdown();
+    }
+    function tickPairCountdown() {
+      if (pairTimer) { clearInterval(pairTimer); pairTimer = null; }
+      if (!pairDeadline) return;
+      pairTimer = setInterval(() => {
+        if (phase !== 'waiting' || !curCode) { clearInterval(pairTimer); pairTimer = null; return; }
+        const left = Math.max(0, Math.round((pairDeadline - Date.now()) / 1000));
+        $('live-hint').textContent = '4 位配对码：' + curCode + ' · 剩余 ' + fmtDur(left) +
+          (role === 'send' ? ' · 对方在「我要接收」输入即连（需你确认）' : ' · 等待对方确认中');
+        $('live-hint').style.display = 'block';
+      }, 500);
+    }
+    function showPairRequest(p) {
+      $('pair-from').textContent = p.name || (p.from || '').slice(0, 8) || '未知设备';
+      $('pair-card').classList.remove('hide');
+      toast('有设备请求连接');
+    }
+    function onPairState(line) {
+      if (line === 'pending' && role === 'recv') {
+        $('live-hint').textContent = '已认领配对码，等待对方确认…';
+        $('live-hint').style.display = 'block';
+      } else if (line === 'denied' || line === 'expired') {
+        $('pair-card').classList.add('hide');
+        toast(line === 'denied' ? '已拒绝，正在生成新配对码' : '配对码已过期，正在生成新码');
+      }
+    }
+    async function decidePair(accept) {
+      $('pair-card').classList.add('hide');
+      try { await postJSON('pair/approve', { accept: accept }); } catch (e) { toast('裁决失败: ' + e.message); }
+      if (!accept) toast('已拒绝，正在生成新配对码');
+    }
+    $('pair-accept').onclick = () => decidePair(true);
+    $('pair-deny').onclick = () => decidePair(false);
 
     // 从日志行推导阶段（与 client 日志措辞同仓演进）。
     function deriveStage(line) {
@@ -532,6 +599,9 @@
 
       // 口令只在等待期大字展示,进入通道后收起降噪
       $('code-big').classList.toggle('hide', !(p === 'waiting' && curCode && role === 'send'));
+      // 接受门卡片只在等待期出现;传输开始后(配对完成)收起
+      $('pair-card').classList.toggle('hide', p !== 'waiting');
+      if (p !== 'waiting' && pairTimer) { clearInterval(pairTimer); pairTimer = null; }
 
       const bar = $('bar'), fill = $('fill');
       bar.classList.remove('indet');
@@ -598,6 +668,8 @@
       phase = 'idle'; role = null; curCode = ''; lastTotal = 0;
       samples = [];
       if (xhrUp) { try { xhrUp.abort(); } catch (e) {} xhrUp = null; }
+      if (pairTimer) { clearInterval(pairTimer); pairTimer = null; }
+      pairDeadline = 0;
       $('live').classList.add('hide');
       $('p2p-log').textContent = '';
       $('p2p-err').textContent = '';
@@ -605,6 +677,7 @@
       $('logbox').open = false;
       $('deliver-box').classList.add('hide');
       $('deliver-list').innerHTML = '';
+      $('pair-card').classList.add('hide');
       $('bdg-p2p').classList.remove('show');
       $('mode-seg').classList.remove('hide');
       const m = document.querySelector('#mode-seg button.on');
@@ -670,7 +743,7 @@
       for (const f of files) fd.append('file', f, f.name);
       const xhr = new XMLHttpRequest();
       xhrUp = xhr;
-      xhr.open('POST', api('send?registry=' + encodeURIComponent(registry)));
+      xhr.open('POST', api((pairMode ? 'pair/send' : 'send') + '?registry=' + encodeURIComponent(registry)));
       xhr.setRequestHeader('X-P2PCWEB', T);
       // 本机回环上传通常极快;大文件时给出读取进度
       xhr.upload.onprogress = e => {
@@ -685,10 +758,15 @@
         xhrUp = null;
         let data = {};
         try { data = JSON.parse(xhr.responseText); } catch (e2) {}
-        if (xhr.status >= 200 && xhr.status < 300 && data.code) {
+        const okResp = xhr.status >= 200 && xhr.status < 300 && (data.code || (pairMode && data.ok));
+        if (okResp) {
           samples = []; lastTotal = 0;
-          showCode(data.code);
+          if (data.code) showCode(data.code);
           setPhase('waiting');
+          if (!data.code) {
+            $('live-hint').textContent = '正在生成配对码…';
+            $('live-hint').style.display = 'block';
+          }
         } else {
           setPhase('failed');
           $('p2p-err').textContent = data.error || ('HTTP ' + xhr.status);

@@ -50,6 +50,17 @@ signaling:
   max_sessions_per_node: 8
   max_total_sessions: 1024
 
+# 配对码(2026-10-18;4 位数字定时码替代 12 位口令转抄,协议契约见 README)。
+# 码是「门牌号+门铃」非钥匙:数据面仍走 PAKE(secret) 既有链路;枚举防线=
+# claim per-IP 限流 + 拒绝即烧码 + 一次性发放 + 亮码方人工接受门。
+pairing:
+  enabled: true
+  code_ttl: 5m          # 配对码有效窗
+  session_ttl: 10m      # 会话总寿命上限(须 ≥ code_ttl;与信令会话对齐)
+  code_len: 4           # 码位数(4-8;运营遇枚举压力可升 6)
+  max_per_node: 8       # 单节点活跃配对会话上限
+  max_total: 4096       # 全局会话上限(内存耗尽防护)
+
 # UDP 地址反射器(M3 打洞前提;与 HTTP 同端口,按魔法串门控,默认开)。
 reflector:
   enabled: true

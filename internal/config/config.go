@@ -20,6 +20,7 @@ type Config struct {
 	Announce     Announce
 	Admin        Admin
 	Signaling    Signaling
+	Pairing      Pairing
 	Relay        Relay
 	Reflector    Reflector
 	Store        Store
@@ -118,6 +119,24 @@ type Signaling struct {
 	MaxTotalSessions int
 }
 
+// Pairing 配对码会话配置（2026-10-18，spec 见 hub docs/specs/2026-10-18-p2p-pairing-code-design.md）。
+type Pairing struct {
+	// Enabled 总开关（默认开；false 时 /v1/pair/* 整体 404，客户端明确降级
+	// 到口令直传）。env: PB_P2P_PAIRING_ENABLED
+	Enabled bool
+	// CodeTTL 配对码有效窗。env: PB_P2P_PAIRING_CODE_TTL
+	CodeTTL time.Duration
+	// SessionTTL 会话总寿命上限（GC 硬顶，须 ≥ CodeTTL）。env: PB_P2P_PAIRING_SESSION_TTL
+	SessionTTL time.Duration
+	// CodeLen 配对码位数（4-8；默认 4，运营遇枚举压力可升 6）。
+	// env: PB_P2P_PAIRING_CODE_LEN
+	CodeLen int
+	// MaxPerNode 单节点活跃会话上限。env: PB_P2P_PAIRING_MAX_PER_NODE
+	MaxPerNode int
+	// MaxTotal 全局会话上限（内存耗尽防护）。env: PB_P2P_PAIRING_MAX_TOTAL
+	MaxTotal int
+}
+
 // Registration 节点注册策略。
 type Registration struct {
 	// Mode: open(开放注册) | token(邀请制,须携带共享注册密钥)。
@@ -178,6 +197,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("signaling.max_frame_bytes", 16384)
 	v.SetDefault("signaling.max_sessions_per_node", 8)
 	v.SetDefault("signaling.max_total_sessions", 1024)
+	// 配对码（默认开；TTL/寿命/位数/配额见 Pairing 结构注释）
+	v.SetDefault("pairing.enabled", true)
+	v.SetDefault("pairing.code_ttl", 5*time.Minute)
+	v.SetDefault("pairing.session_ttl", 10*time.Minute)
+	v.SetDefault("pairing.code_len", 4)
+	v.SetDefault("pairing.max_per_node", 8)
+	v.SetDefault("pairing.max_total", 4096)
 	// 中继(M3 兜底;默认关)+UDP 反射器(打洞前提;默认开)
 	v.SetDefault("relay.enabled", true)
 	v.SetDefault("relay.port", 12347)
@@ -206,7 +232,9 @@ var knownKeys = map[string]bool{
 	"signaling.hello_timeout": true, "signaling.ping_period": true, "signaling.write_wait": true,
 	"signaling.max_frame_bytes": true, "signaling.max_sessions_per_node": true,
 	"signaling.max_total_sessions": true,
-	"relay.enabled":                true, "relay.port": true, "relay.mbps_per_channel": true,
+	"pairing.enabled":              true, "pairing.code_ttl": true, "pairing.session_ttl": true,
+	"pairing.code_len": true, "pairing.max_per_node": true, "pairing.max_total": true,
+	"relay.enabled": true, "relay.port": true, "relay.mbps_per_channel": true,
 	"relay.max_waiting": true, "relay.max_conns_per_ip": true, "relay.waiting_timeout": true,
 	"reflector.enabled":   true,
 	"store.snapshot_path": true, "store.snapshot_interval": true,
@@ -267,6 +295,14 @@ func Load(path string) (*Config, error) {
 			MaxFrameBytes:      v.GetInt("signaling.max_frame_bytes"),
 			MaxSessionsPerNode: v.GetInt("signaling.max_sessions_per_node"),
 			MaxTotalSessions:   v.GetInt("signaling.max_total_sessions"),
+		},
+		Pairing: Pairing{
+			Enabled:    v.GetBool("pairing.enabled"),
+			CodeTTL:    v.GetDuration("pairing.code_ttl"),
+			SessionTTL: v.GetDuration("pairing.session_ttl"),
+			CodeLen:    v.GetInt("pairing.code_len"),
+			MaxPerNode: v.GetInt("pairing.max_per_node"),
+			MaxTotal:   v.GetInt("pairing.max_total"),
 		},
 		Relay: Relay{
 			Enabled:        v.GetBool("relay.enabled"),
@@ -353,6 +389,18 @@ func (c *Config) validate() error {
 		if c.Signaling.MaxSessionsPerNode < 1 || c.Signaling.MaxTotalSessions < 1 {
 			return fmt.Errorf("signaling 会话上限非法: per_node=%d total=%d",
 				c.Signaling.MaxSessionsPerNode, c.Signaling.MaxTotalSessions)
+		}
+	}
+	if c.Pairing.Enabled {
+		if c.Pairing.CodeTTL <= 0 || c.Pairing.SessionTTL < c.Pairing.CodeTTL {
+			return fmt.Errorf("pairing 时长非法: code_ttl=%s session_ttl=%s(须 session_ttl ≥ code_ttl > 0)",
+				c.Pairing.CodeTTL, c.Pairing.SessionTTL)
+		}
+		if c.Pairing.CodeLen < 4 || c.Pairing.CodeLen > 8 {
+			return fmt.Errorf("pairing.code_len 须在 [4,8],当前: %d", c.Pairing.CodeLen)
+		}
+		if c.Pairing.MaxPerNode < 1 || c.Pairing.MaxTotal < 1 {
+			return fmt.Errorf("pairing 配额非法: per_node=%d total=%d", c.Pairing.MaxPerNode, c.Pairing.MaxTotal)
 		}
 	}
 	if c.Relay.Enabled {

@@ -41,6 +41,8 @@ func newKeyedLimiter(ctx context.Context, r rate.Limit, burst int) *ratelimit.Ke
 // Params 装配参数。
 type Params struct {
 	Service *registry.Service
+	// Pairing 配对码会话中心（pairing.enabled=false 时为 nil，端点不注册）。
+	Pairing *registry.PairingService
 	Config  config.Config
 	Logger  *slog.Logger
 	Metrics *Metrics
@@ -55,6 +57,7 @@ type Server struct {
 	metrics *Metrics
 	version string
 	hub     *signaling.Hub // M3 信令（signaling.enabled=false 时为 nil）
+	pairing *registry.PairingService
 
 	resolveLim *ratelimit.KeyedLimiter // 读路径(resolve/node 查询)
 	writeLim   *ratelimit.KeyedLimiter // 写路径(register/announce/信道接入)
@@ -62,6 +65,9 @@ type Server struct {
 	// resolveHashLim per-hash 维度限流:per-IP 限不住 IP 池对热点 code_hash
 	// 的选择明文枚举/定向阻断观测,双键叠加(IP 10x, hash 1x)。
 	resolveHashLim *ratelimit.KeyedLimiter
+	// pairClaimLim 配对 claim per-IP 限流(≈30/min):错码不可归因到会话,
+	// per-IP 是 4 位码枚举的主防线。
+	pairClaimLim *ratelimit.KeyedLimiter
 }
 
 // New 构造 Server。ctx 用于限流器/信令清扫协程的生命周期。
@@ -94,10 +100,12 @@ func New(ctx context.Context, p Params) *Server {
 		metrics:        m,
 		version:        p.Version,
 		hub:            hub,
-		resolveLim:     newKeyedLimiter(ctx, 1, 120), // resolve: 平均 1/s 突发 120
-		writeLim:       newKeyedLimiter(ctx, 2, 120), // 写路径: 平均 2/s 突发 120
-		adminLim:       newKeyedLimiter(ctx, 10, 60), // 管理端宽松
-		resolveHashLim: newKeyedLimiter(ctx, 10, 60), // 单 hash: 平均 10/s(正常取件重试 2/s×多接收方余量)
+		pairing:        p.Pairing,
+		resolveLim:     newKeyedLimiter(ctx, 1, 120),  // resolve: 平均 1/s 突发 120
+		writeLim:       newKeyedLimiter(ctx, 2, 120),  // 写路径: 平均 2/s 突发 120
+		adminLim:       newKeyedLimiter(ctx, 10, 60),  // 管理端宽松
+		resolveHashLim: newKeyedLimiter(ctx, 10, 60),  // 单 hash: 平均 10/s(正常取件重试 2/s×多接收方余量)
+		pairClaimLim:   newKeyedLimiter(ctx, 0.5, 30), // 配对 claim: ≈30/min/IP(枚举主防线)
 	}
 }
 
@@ -146,6 +154,14 @@ func (s *Server) Handler() http.Handler {
 	// M3 信令信道（signaling.enabled=false 时不注册）
 	if s.hub != nil {
 		s.route(mux, "GET /v1/channel/{hash}", "channel", s.writeLim, s.hub.Handler())
+	}
+
+	// 配对码（pairing.enabled=false 时不注册;claim 的 per-IP 限流在 handler 内叠加）
+	if s.pairing != nil {
+		s.route(mux, "POST /v1/pair", "pair_create", s.writeLim, s.handlePairCreate)
+		s.route(mux, "POST /v1/pair/claim", "pair_claim", s.writeLim, s.handlePairClaim)
+		s.route(mux, "POST /v1/pair/approve", "pair_approve", s.writeLim, s.handlePairApprove)
+		s.route(mux, "POST /v1/pair/requests", "pair_requests", s.writeLim, s.handlePairRequests)
 	}
 
 	return recoverMW(s.log, requestLogMW(s.log, mux))

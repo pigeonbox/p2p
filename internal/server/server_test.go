@@ -57,7 +57,13 @@ func testConfig(adminPW string) config.Config {
 		},
 		Announce: config.Announce{MaxPerNode: 10, MaxTTL: time.Hour},
 		Admin:    config.Admin{Password: adminPW},
-		Log:      config.Log{Level: "error"},
+		// 配对码:测试与生产同参(TTL 5min 级别不影响用例速度,过期路径走
+		// mutate 注入短 TTL)
+		Pairing: config.Pairing{
+			Enabled: true, CodeTTL: 5 * time.Minute, SessionTTL: 10 * time.Minute,
+			CodeLen: 4, MaxPerNode: 8, MaxTotal: 4096,
+		},
+		Log: config.Log{Level: "error"},
 	}
 }
 
@@ -78,7 +84,15 @@ func newTestServer(t *testing.T, mutate func(*config.Config)) (*httptest.Server,
 		RequireToken:   cfg.Registration.Token,
 	})
 	metrics := NewMetrics()
-	srv := New(ctx, Params{Service: svc, Config: cfg, Metrics: metrics, Version: "test"})
+	var pairingSvc *registry.PairingService
+	if cfg.Pairing.Enabled {
+		pairingSvc = registry.NewPairingService(ctx, registry.PairingConfig{
+			CodeTTL: cfg.Pairing.CodeTTL, SessionTTL: cfg.Pairing.SessionTTL,
+			CodeLen: cfg.Pairing.CodeLen, MaxPerNode: cfg.Pairing.MaxPerNode,
+			MaxTotal: cfg.Pairing.MaxTotal,
+		}, svc)
+	}
+	srv := New(ctx, Params{Service: svc, Pairing: pairingSvc, Config: cfg, Metrics: metrics, Version: "test"})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, metrics

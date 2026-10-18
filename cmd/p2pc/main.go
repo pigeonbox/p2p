@@ -9,6 +9,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -71,8 +72,10 @@ func usage() {
   p2pc send <文件|目录>... [--registry URL] [--code 口令] [--relay HOST:PORT]
                   [--key PATH] [--no-punch] [--quiet] [--json]
                   [--invite-to NODE_ID] [--invite-note 附言] [--invite-name 显示名]
-  p2pc recv <口令> [--registry URL] [--out DIR] [--yes] [--json]
+                  [--pair] [--yes]                        配对码模式(亮四位定时码)
+  p2pc recv <口令|配对码> [--registry URL] [--out DIR] [--yes] [--json]
                   [--relay HOST:PORT] [--key PATH] [--no-punch] [--quiet]
+                  [--pair]                                --pair 且无码=反向亮码
                   （口令传 "-" 时从 PB_P2P_CODE 环境变量读取——argv 不留码,
                     服务进程调用方(server supervisor)的硬化通道）
   p2pc directory [--registry URL]                  列在线名录(JSON)
@@ -82,10 +85,15 @@ func usage() {
 说明:
   --registry   p2pd 注册中心基址(默认 http://127.0.0.1:12346)
   口令格式     XXXX-XXXX-XXXX(send 自动生成;recv 原样输入,含连字符)
+  配对码模式   --pair 亮 4 位数字定时码(5 分钟失效,对方输入即连,免抄 12 位
+               口令);recv/send 侧 4-8 位纯数字自动按配对码认领(反向配对的
+               对端),查无此码回退口令解析,--pair 强制只走配对;接受门缺省
+               人工确认,--yes/--json 自动
   传输优先 UDP 打洞直连,失败自动回落中继(先通后优:中继上起传,后台打洞
   成功后文件边界自动升级直连;中继需服务端 relay.enabled=true,现默认开)
   目录会整棵递归;接收方可逐文件授权(--yes 跳过交互全部接受)
-  --json       NDJSON 事件流(code/done/error),供程序调用方解析;缺省纯文本
+  --json       NDJSON 事件流(code/pair_code/pair_request/done/error),供程序
+               调用方解析;缺省纯文本
   --invite-to  发送后向名录对端信箱投递密封邀请(收端 NAT 后可达;
                发邀请=自愿入名录;失败仅告警不影响发送)
   mailbox      邀请 = 口令 bearer;开箱以名录 box_pub 验真,失败即跳过;
@@ -112,7 +120,9 @@ func send(args []string) {
 	opt := commonFlags(fs)
 	var code string
 	fs.StringVar(&code, "code", "", "指定口令(缺省自动生成)")
-	jsonFlag := fs.Bool("json", false, "NDJSON 事件流输出(机器可读:code/done/error)")
+	jsonFlag := fs.Bool("json", false, "NDJSON 事件流输出(机器可读:code/pair_code/pair_request/done/error)")
+	pairMode := fs.Bool("pair", false, "配对码模式:亮 4 位定时码,对方输入码即连(免抄口令)")
+	yes := fs.Bool("yes", false, "自动接受敲门请求(跳过接受门问询)")
 	inviteTo := fs.String("invite-to", "", "发送后向该名录对端投递密封邀请(node_id)")
 	inviteNote := fs.String("invite-note", "", "邀请附言")
 	inviteName := fs.String("invite-name", "", "邀请显示名(缺省主机名)")
@@ -145,12 +155,43 @@ func send(args []string) {
 	if err != nil {
 		failJSON(err)
 	}
+
+	// 配对码模式:亮码→接受门→兑换→传输,全部在 SendPaired 内编排
+	if *pairMode {
+		if _, err := c.SendPaired(paths, pairCallbacks(*yes || jsonOut)); err != nil {
+			failJSON(err)
+		}
+		clearUIProgress()
+		if jsonOut {
+			emitEvent("done", map[string]any{"kind": "send"})
+		} else {
+			fmt.Println("\n✓ 发送完成")
+		}
+		return
+	}
+
 	// 口令先亮后等:Send 内部自动口令只在其返回后才可读,等待期接收方无从得知
 	code = strings.ToUpper(code)
 	if code == "" {
 		if code, err = client.GenerateCode(); err != nil {
 			failJSON(err)
 		}
+	}
+	// 敲码发送(反向配对的发送侧):4-8 位纯数字先按配对码认领;查无此码回退
+	// 口令直传(自定义短口令兼容,与 recv 侧对称)
+	if client.IsPairingCode(code) {
+		if _, perr := c.SendByClaim(code, paths, pairCallbacks(false)); perr == nil {
+			clearUIProgress()
+			if jsonOut {
+				emitEvent("done", map[string]any{"kind": "send"})
+			} else {
+				fmt.Println("\n✓ 发送完成")
+			}
+			return
+		} else if !errors.Is(perr, client.ErrPairUnknown) {
+			failJSON(perr)
+		}
+		fmt.Fprintln(os.Stderr, "⚠ 未找到配对码,按口令直传解析…")
 	}
 	if jsonOut {
 		emitEvent("code", map[string]any{"code": code})
@@ -254,24 +295,13 @@ func receive(args []string) {
 	fs.StringVar(&out, "out", out, "接收目录")
 	yes := fs.Bool("yes", false, "全部接受(跳过逐文件交互授权)")
 	jsonFlag := fs.Bool("json", false, "NDJSON 事件流输出(机器可读:done/error;强制非交互)")
+	pairForce := fs.Bool("pair", false, "配对码语义:无位置参数=反向亮码等待对方推送;带 4-8 位数字=只按配对码处理(不做口令回退)")
 	if err := parseArgs(fs.FlagSet, args); err != nil {
 		os.Exit(2)
 	}
 	jsonOut = *jsonFlag
 	if jsonOut {
 		*yes = true // JSON 流不可被交互提示污染
-	}
-	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "✗ 缺少口令参数")
-		os.Exit(2)
-	}
-	code, err := resolveRecvCode(fs.Args())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
-		os.Exit(2)
-	}
-	if !*yes {
-		opt.ChooseFiles = chooseInteractively
 	}
 
 	// 终端人性化输出（TTY 限定;--json/管道不受影响;先于 client.New,理由同 send）
@@ -281,43 +311,45 @@ func receive(args []string) {
 			slog.SetDefault(slog.New(h))
 		}
 	}
+	if !*yes {
+		opt.ChooseFiles = chooseInteractively
+	}
 	c, err := client.New(*opt)
 	if err != nil {
 		fail(err)
 	}
-	files, err := c.Receive(code, out)
-	if err != nil {
-		clearUIProgress()
-		if len(files) > 0 {
-			fmt.Fprintf(os.Stderr, "✗ 部分失败(已收 %d 个): %v\n", len(files), err)
-		}
-		if jsonOut {
-			emitEvent("error", map[string]any{"msg": err.Error(), "files": len(files)})
-			os.Exit(1)
-		}
-		fail(err)
-	}
-	clearUIProgress()
-	if jsonOut {
-		abs := make([]string, 0, len(files))
-		for _, f := range files {
-			if a, aerr := filepath.Abs(f); aerr == nil {
-				abs = append(abs, a)
-			} else {
-				abs = append(abs, f)
-			}
-		}
-		emitEvent("done", map[string]any{"kind": "recv", "files": len(files), "paths": abs})
+
+	// 反向配对:接收方亮码,对方敲码后推送文件过来
+	if *pairForce && fs.NArg() == 0 {
+		files, perr := c.ReceivePairedAsCreator(out, pairCallbacks(*yes))
+		finishRecv(files, perr)
 		return
 	}
-	fmt.Printf("\n✓ 接收完成(%d 个文件):\n", len(files))
-	for _, f := range files {
-		if abs, aerr := filepath.Abs(f); aerr == nil {
-			fmt.Println("  " + abs)
-		} else {
-			fmt.Println("  " + f)
-		}
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "✗ 缺少口令参数")
+		os.Exit(2)
 	}
+	code, err := resolveRecvCode(fs.Args())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+		os.Exit(2)
+	}
+	// 配对码:4-8 位纯数字先按配对码认领;查无此码(非 --pair 强制)回退口令解析
+	if client.IsPairingCode(code) || *pairForce {
+		files, perr := c.ReceivePaired(code, out, pairCallbacks(*yes))
+		if perr == nil {
+			finishRecv(files, nil)
+			return
+		}
+		if !errors.Is(perr, client.ErrPairUnknown) || *pairForce {
+			clearUIProgress()
+			failJSON(perr)
+		}
+		fmt.Fprintln(os.Stderr, "⚠ 未找到配对码,按口令直传解析…")
+	}
+	files, err := c.Receive(code, out)
+	finishRecv(files, err)
 }
 
 // directoryCmd 在线名录:JSON 输出 discoverable 节点列表。
@@ -413,6 +445,113 @@ func chooseInteractively(mf client.Manifest) []client.ManifestEntry {
 		return mf.Files
 	}
 	return picked
+}
+
+// pairCallbacks 配对编排回调（send 亮码/recv 敲码/recv 反向亮码三形态共用）。
+// JSON 模式恒自动接受（接受门语义经 pair_request 事件上抛，由 supervisor 自行处置）。
+func pairCallbacks(autoAccept bool) client.PairCallbacks {
+	return client.PairCallbacks{
+		OnCode: func(code string, ttl time.Duration) {
+			if jsonOut {
+				emitEvent("pair_code", map[string]any{"code": code, "ttl_seconds": int64(ttl.Seconds())})
+				return
+			}
+			fmt.Printf("配对码: %s（%s 内有效）\n请在另一台设备输入该配对码（或执行: p2pc recv %s）...\n",
+				code, ttl.Truncate(time.Second), code)
+		},
+		OnRequest: func(req client.PairRequestView) bool {
+			if jsonOut {
+				emitEvent("pair_request", map[string]any{"from": req.NodeID, "name": req.Name})
+				return true
+			}
+			if autoAccept {
+				fmt.Printf("已自动接受设备 %s（%s…）的连接\n", pairPeerName(req), shortNodeID(req.NodeID))
+				return true
+			}
+			return askApprove(req)
+		},
+		OnDenied: func(req client.PairRequestView) {
+			if jsonOut {
+				emitEvent("pair_denied", map[string]any{"from": req.NodeID})
+				return
+			}
+			fmt.Printf("已拒绝设备 %s，配对码作废，重新生成中…\n", pairPeerName(req))
+		},
+		OnExpired: func() {
+			if jsonOut {
+				emitEvent("pair_expired", nil)
+				return
+			}
+			fmt.Println("配对码已过期，重新生成中…")
+		},
+		OnPending: func() {
+			if !jsonOut {
+				fmt.Println("等待对方确认…")
+			}
+		},
+	}
+}
+
+// askApprove 接受门问询：回车/y 接受，其余拒绝（管道 stdin 无输入=自动接受，
+// 与 --yes/--json 的非交互语义一致）。
+func askApprove(req client.PairRequestView) bool {
+	fmt.Printf("设备 %s（%s…）请求连接，接受? [Y/n] > ", pairPeerName(req), shortNodeID(req.NodeID))
+	var line string
+	_, _ = fmt.Scanln(&line)
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "y", "yes":
+		return true
+	}
+	return false
+}
+
+func pairPeerName(req client.PairRequestView) string {
+	if name := strings.TrimSpace(req.Name); name != "" {
+		return name
+	}
+	return "未知设备"
+}
+
+func shortNodeID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// finishRecv 接收收尾统一出口（配对/口令/反向三路径共用）。
+func finishRecv(files []string, err error) {
+	clearUIProgress()
+	if err != nil {
+		if len(files) > 0 {
+			fmt.Fprintf(os.Stderr, "✗ 部分失败(已收 %d 个): %v\n", len(files), err)
+		}
+		if jsonOut {
+			emitEvent("error", map[string]any{"msg": err.Error(), "files": len(files)})
+			os.Exit(1)
+		}
+		fail(err)
+	}
+	if jsonOut {
+		abs := make([]string, 0, len(files))
+		for _, f := range files {
+			if a, aerr := filepath.Abs(f); aerr == nil {
+				abs = append(abs, a)
+			} else {
+				abs = append(abs, f)
+			}
+		}
+		emitEvent("done", map[string]any{"kind": "recv", "files": len(files), "paths": abs})
+		return
+	}
+	fmt.Printf("\n✓ 接收完成(%d 个文件):\n", len(files))
+	for _, f := range files {
+		if abs, aerr := filepath.Abs(f); aerr == nil {
+			fmt.Println("  " + abs)
+		} else {
+			fmt.Println("  " + f)
+		}
+	}
 }
 
 // parseArgs 位置无关的 flag 解析:Go flag 包遇首个非 flag 参数即停,

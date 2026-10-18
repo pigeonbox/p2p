@@ -80,9 +80,22 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// 配对码会话中心（pairing.enabled=false 时为 nil,端点不注册）。
+	var pairingSvc *registry.PairingService
+	if cfg.Pairing.Enabled {
+		pairingSvc = registry.NewPairingService(ctx, registry.PairingConfig{
+			CodeTTL:    cfg.Pairing.CodeTTL,
+			SessionTTL: cfg.Pairing.SessionTTL,
+			CodeLen:    cfg.Pairing.CodeLen,
+			MaxPerNode: cfg.Pairing.MaxPerNode,
+			MaxTotal:   cfg.Pairing.MaxTotal,
+		}, svc)
+	}
+
 	metrics := server.NewMetrics()
 	srv := server.New(ctx, server.Params{
 		Service: svc,
+		Pairing: pairingSvc,
 		Config:  *cfg,
 		Logger:  logger,
 		Metrics: metrics,
@@ -160,14 +173,14 @@ func main() {
 				select {
 				case <-ctx.Done():
 					return
-			case <-t.C:
-				// 单轮 panic 收编（RunSafeLabeled→全局 slog handler）：快照协程炸掉=
-				// 状态不再持久化，重启即丢全部注册数据
-				async.RunSafeLabeled("p2pd-snapshot", func() {
-					if err := saveSnapshot(memStore, cfg.Store.SnapshotPath); err != nil {
-						logger.Warn("快照落盘失败", "path", cfg.Store.SnapshotPath, "err", err)
-					}
-				})
+				case <-t.C:
+					// 单轮 panic 收编（RunSafeLabeled→全局 slog handler）：快照协程炸掉=
+					// 状态不再持久化，重启即丢全部注册数据
+					async.RunSafeLabeled("p2pd-snapshot", func() {
+						if err := saveSnapshot(memStore, cfg.Store.SnapshotPath); err != nil {
+							logger.Warn("快照落盘失败", "path", cfg.Store.SnapshotPath, "err", err)
+						}
+					})
 				}
 			}
 		}()

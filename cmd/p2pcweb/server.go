@@ -224,6 +224,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/state", s.guard(s.handleState))
 	mux.HandleFunc("/api/config", s.guard(s.handleConfig))
 	mux.HandleFunc("/api/send", s.guard(s.handleSend))
+	mux.HandleFunc("POST /api/pair/send", s.guard(s.handlePairSend))
+	mux.HandleFunc("POST /api/pair/approve", s.guard(s.handlePairApprove))
 	mux.HandleFunc("/api/recv", s.guard(s.handleRecv))
 	mux.HandleFunc("/api/cancel", s.guard(s.handleCancel))
 	mux.HandleFunc("/api/events", s.guard(s.handleEvents))
@@ -313,91 +315,9 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, ErrBusy.Error())
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, s.maxUpload+(1<<20))
-	mr, err := r.MultipartReader()
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "需要 multipart 文件表单")
+	dest, cleanup, ok := s.stageUpload(w, r)
+	if !ok {
 		return
-	}
-	tmpDir, err := os.MkdirTemp("", "p2pcweb-upload-")
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "临时目录创建失败: "+err.Error())
-		return
-	}
-	cleanup := func() { _ = os.RemoveAll(tmpDir) }
-
-	// 多文件:收齐全部 file part;单文件直发(原名),多文件归组到
-	// 「PigeonBox 共享 <时间>」目录(对端 manifest 呈现组名/相对路径)。
-	var saved int
-	var single string
-	for {
-		part, perr := mr.NextPart()
-		if errors.Is(perr, io.EOF) {
-			break
-		}
-		if perr != nil {
-			cleanup()
-			writeErr(w, http.StatusBadRequest, "表单解析失败")
-			return
-		}
-		if part.FormName() != "file" {
-			_ = part.Close()
-			continue
-		}
-		dest := filepath.Join(tmpDir, sanitizeName(part.FileName()))
-		f, ferr := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if ferr != nil {
-			cleanup()
-			writeErr(w, http.StatusInternalServerError, "临时文件创建失败: "+ferr.Error())
-			return
-		}
-		n, cerr := io.Copy(f, part)
-		fClose := f.Close()
-		_ = part.Close()
-		if cerr != nil || fClose != nil {
-			cleanup()
-			writeErr(w, http.StatusBadRequest, "上传读取失败")
-			return
-		}
-		if n > s.maxUpload {
-			cleanup()
-			writeErr(w, http.StatusRequestEntityTooLarge,
-				fmt.Sprintf("文件超过上限 %d 字节（--max-upload 可调）", s.maxUpload))
-			return
-		}
-		if n == 0 {
-			cleanup()
-			writeErr(w, http.StatusBadRequest, "空文件: "+part.FileName())
-			return
-		}
-		saved++
-		single = dest
-	}
-	if saved == 0 {
-		cleanup()
-		writeErr(w, http.StatusBadRequest, "缺少 file 字段")
-		return
-	}
-	dest := single
-	if saved > 1 {
-		group := filepath.Join(tmpDir, "PigeonBox 共享 "+time.Now().Format("01-02 15:04"))
-		if err := os.Mkdir(group, 0o700); err != nil {
-			cleanup()
-			writeErr(w, http.StatusInternalServerError, "组目录创建失败: "+err.Error())
-			return
-		}
-		entries, _ := os.ReadDir(tmpDir)
-		for _, en := range entries {
-			if en.IsDir() {
-				continue
-			}
-			if err := os.Rename(filepath.Join(tmpDir, en.Name()), filepath.Join(group, en.Name())); err != nil {
-				cleanup()
-				writeErr(w, http.StatusInternalServerError, "归组失败: "+err.Error())
-				return
-			}
-		}
-		dest = group
 	}
 
 	code, err := client.GenerateCode()
@@ -412,6 +332,138 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"code": code})
+}
+
+// stageUpload 流式收 multipart 上传 → 临时目录（保留原始文件名）。单文件
+// 直发（原名）；多文件归组到「PigeonBox 共享 <时间>」目录。返回归一化发送
+// 目标与清理函数；校验失败时已写响应并返回 false。
+func (s *Server) stageUpload(w http.ResponseWriter, r *http.Request) (string, func(), bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxUpload+(1<<20))
+	mr, err := r.MultipartReader()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "需要 multipart 文件表单")
+		return "", nil, false
+	}
+	tmpDir, err := os.MkdirTemp("", "p2pcweb-upload-")
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "临时目录创建失败: "+err.Error())
+		return "", nil, false
+	}
+	cleanup := func() { _ = os.RemoveAll(tmpDir) }
+
+	var saved int
+	var single string
+	for {
+		part, perr := mr.NextPart()
+		if errors.Is(perr, io.EOF) {
+			break
+		}
+		if perr != nil {
+			cleanup()
+			writeErr(w, http.StatusBadRequest, "表单解析失败")
+			return "", nil, false
+		}
+		if part.FormName() != "file" {
+			_ = part.Close()
+			continue
+		}
+		dest := filepath.Join(tmpDir, sanitizeName(part.FileName()))
+		f, ferr := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if ferr != nil {
+			cleanup()
+			writeErr(w, http.StatusInternalServerError, "临时文件创建失败: "+ferr.Error())
+			return "", nil, false
+		}
+		n, cerr := io.Copy(f, part)
+		fClose := f.Close()
+		_ = part.Close()
+		if cerr != nil || fClose != nil {
+			cleanup()
+			writeErr(w, http.StatusBadRequest, "上传读取失败")
+			return "", nil, false
+		}
+		if n > s.maxUpload {
+			cleanup()
+			writeErr(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("文件超过上限 %d 字节（--max-upload 可调）", s.maxUpload))
+			return "", nil, false
+		}
+		if n == 0 {
+			cleanup()
+			writeErr(w, http.StatusBadRequest, "空文件: "+part.FileName())
+			return "", nil, false
+		}
+		saved++
+		single = dest
+	}
+	if saved == 0 {
+		cleanup()
+		writeErr(w, http.StatusBadRequest, "缺少 file 字段")
+		return "", nil, false
+	}
+	dest := single
+	if saved > 1 {
+		group := filepath.Join(tmpDir, "PigeonBox 共享 "+time.Now().Format("01-02 15:04"))
+		if err := os.Mkdir(group, 0o700); err != nil {
+			cleanup()
+			writeErr(w, http.StatusInternalServerError, "组目录创建失败: "+err.Error())
+			return "", nil, false
+		}
+		entries, _ := os.ReadDir(tmpDir)
+		for _, en := range entries {
+			if en.IsDir() {
+				continue
+			}
+			if err := os.Rename(filepath.Join(tmpDir, en.Name()), filepath.Join(group, en.Name())); err != nil {
+				cleanup()
+				writeErr(w, http.StatusInternalServerError, "归组失败: "+err.Error())
+				return "", nil, false
+			}
+		}
+		dest = group
+	}
+	return dest, cleanup, true
+}
+
+// handlePairSend 配对码发送：上传暂存与 handleSend 同构（stageUpload 共用），
+// 但不预铸口令——子进程 SendPaired 铸 4 位配对码经 PAIR-CODE 标记行回传，
+// secret 全程不出子进程。
+func (s *Server) handlePairSend(w http.ResponseWriter, r *http.Request) {
+	registry := normalizeBaseURL(r.URL.Query().Get("registry"))
+	if registry == "" {
+		writeErr(w, http.StatusBadRequest, "请填写直传注册中心地址")
+		return
+	}
+	if s.mgr.Busy() {
+		writeErr(w, http.StatusConflict, ErrBusy.Error())
+		return
+	}
+	dest, cleanup, ok := s.stageUpload(w, r)
+	if !ok {
+		return
+	}
+	if err := s.mgr.Start("send-pair", registry, "", dest, "", s.relay, s.noPunch, cleanup); err != nil {
+		cleanup()
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"ok": "1"})
+}
+
+// handlePairApprove 网页接受门裁决 → 转发到配对子进程（stdin 单行协议）。
+func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Accept bool `json:"accept"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体非法")
+		return
+	}
+	if err := s.mgr.ApprovePair(in.Accept); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"ok": "1"})
 }
 
 // multipartPart 已移除（直接用 *multipart.Part）。
@@ -436,7 +488,13 @@ func (s *Server) handleRecv(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.get()
 	cfg.Registry = registry
 	_ = s.cfg.set(cfg)
-	if err := s.mgr.Start("recv", registry, code, "", s.outDir, s.relay, s.noPunch, nil); err != nil {
+	// 4-8 位纯数字 = 配对码:走 recv-pair 子模式(claim→兑换→传输一条龙,
+	// pending 态经 PAIR-STATE 标记行回传);其余按口令直传。
+	kind := "recv"
+	if client.IsPairingCode(code) {
+		kind = "recv-pair"
+	}
+	if err := s.mgr.Start(kind, registry, code, "", s.outDir, s.relay, s.noPunch, nil); err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
