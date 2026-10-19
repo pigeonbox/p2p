@@ -226,6 +226,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/send", s.guard(s.handleSend))
 	mux.HandleFunc("POST /api/pair/send", s.guard(s.handlePairSend))
 	mux.HandleFunc("POST /api/pair/approve", s.guard(s.handlePairApprove))
+	mux.HandleFunc("POST /api/pair/recv", s.guard(s.handlePairRecv))
 	mux.HandleFunc("/api/recv", s.guard(s.handleRecv))
 	mux.HandleFunc("/api/cancel", s.guard(s.handleCancel))
 	mux.HandleFunc("/api/events", s.guard(s.handleEvents))
@@ -444,6 +445,29 @@ func (s *Server) handlePairSend(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.mgr.Start("send-pair", registry, "", dest, "", s.relay, s.noPunch, cleanup); err != nil {
 		cleanup()
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"ok": "1"})
+}
+
+// handlePairRecv 反向亮码收件（2026-10-19 易用性）:本端铸 4 位码等待对方
+// 敲码推送（AirDrop 式「我要收」）。registry 走入参或已存配置。
+func (s *Server) handlePairRecv(w http.ResponseWriter, r *http.Request) {
+	registry := normalizeBaseURL(r.URL.Query().Get("registry"))
+	if registry == "" {
+		cfg := s.cfg.get()
+		registry = normalizeBaseURL(cfg.Registry)
+	}
+	if registry == "" {
+		writeErr(w, http.StatusBadRequest, "请填写直传注册中心地址")
+		return
+	}
+	if s.mgr.Busy() {
+		writeErr(w, http.StatusConflict, ErrBusy.Error())
+		return
+	}
+	if err := s.mgr.Start("recv-pair-creator", registry, "", "", s.outDir, s.relay, s.noPunch, nil); err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}

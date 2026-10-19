@@ -241,6 +241,7 @@
             <button id="recv" class="btn">开始接收</button>
           </div>
           <p class="mini" style="margin: 9px 2px 0;">口令/配对码由对方提供；配对码 5 分钟内有效且需对方确认。文件保存到下载目录，全程端到端加密。</p>
+          <button id="recv-pair-creator" class="btn ghost" style="margin-top:8px;width:100%">或亮码等对方推（我收文件，对方输码连接）</button>
         </div>
 
         <div id="live" class="hide" aria-live="polite">
@@ -796,6 +797,25 @@
       this.value = this.value.toUpperCase().replace(/[^0-9A-Z-]/g, '').slice(0, 14);
     });
     $('p2p-code').addEventListener('keydown', e => { if (e.key === 'Enter') $('recv').click(); });
+    // 反向亮码收件(2026-10-19):本端铸 4 位码等待对方敲码推送(AirDrop 式「我要收」)
+    $('recv-pair-creator').onclick = async () => {
+      if (active()) return;
+      const registry = regRequired();
+      if (!registry) return;
+      resetLiveKeepPane();
+      role = 'recv';
+      enterLive();
+      setPhase('waiting');
+      $('live-hint').textContent = '正在生成配对码…';
+      $('live-hint').style.display = 'block';
+      try {
+        await postJSON('pair/recv?registry=' + encodeURIComponent(registry), {});
+      } catch (e) {
+        resetAll();
+        toast('发起失败: ' + (e.message || e));
+      }
+    };
+
     $('recv').onclick = async () => {
       if (active()) return;
       const code = $('p2p-code').value.trim().toUpperCase();

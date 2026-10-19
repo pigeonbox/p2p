@@ -152,7 +152,7 @@ func (m *Manager) Start(kind, registry, code, path, outDir, relay string, noPunc
 		m.mu.Unlock()
 		return fmt.Errorf("启动传输: %w", err)
 	}
-	isPair := kind == "send-pair" || kind == "recv-pair"
+	isPair := kind == "send-pair" || kind == "recv-pair" || kind == "recv-pair-creator"
 	startCode := code
 	if isPair {
 		startCode = "" // 配对码由子进程铸出后经 PAIR-CODE 标记行回传
@@ -406,6 +406,35 @@ func runTransferChild(o *options) int {
 		files, err := c.ReceivePaired(strings.ToUpper(strings.TrimSpace(o.code)), o.outDir, client.PairCallbacks{
 			OnPending: func() {
 				fmt.Printf("%s pending\n", pairStateMarker)
+			},
+		})
+		if err != nil {
+			return childFail(err)
+		}
+		if len(files) == 0 {
+			return childFail(fmt.Errorf("未收到文件"))
+		}
+		fmt.Println(doneMarker + " " + strings.Join(files, "\x1f"))
+	case "recv-pair-creator":
+		// 反向亮码收件:本端铸 4 位码等待对方敲码推送,接受门在本端(stdin 裁决)。
+		files, err := c.ReceivePairedAsCreator(o.outDir, client.PairCallbacks{
+			OnCode: func(code string, ttl time.Duration) {
+				fmt.Printf("%s %s %d\n", pairCodeMarker, code, int64(ttl/time.Second))
+			},
+			OnRequest: func(req client.PairRequestView) bool {
+				fmt.Printf("%s %s %s\n", pairRequestMarker, req.NodeID, compactMarkerArg(req.Name))
+				rd := bufio.NewReader(os.Stdin)
+				line, rerr := rd.ReadString('\n')
+				if rerr != nil {
+					return false // stdin 断(父进程退出/kill)=放弃
+				}
+				return strings.TrimSpace(line) == "y"
+			},
+			OnDenied: func(client.PairRequestView) {
+				fmt.Printf("%s denied\n", pairStateMarker)
+			},
+			OnExpired: func() {
+				fmt.Printf("%s expired\n", pairStateMarker)
 			},
 		})
 		if err != nil {
