@@ -138,6 +138,12 @@ func send(args []string) {
 		fmt.Fprintln(os.Stderr, "✗ 缺少文件/目录参数")
 		os.Exit(2)
 	}
+	// 配对码模式与密封邀请语义互斥:邀请依附口令路径,配对模式由对方输码
+	// 连接——静默忽略会让用户误以为邀请已投递(2026-10-19 易用性走查)
+	if *pairMode && strings.TrimSpace(*inviteTo) != "" {
+		fmt.Fprintln(os.Stderr, "✗ --pair 与 --invite-to 不兼容:配对码模式由对方输码连接,不走密封邀请;请去掉其一")
+		os.Exit(2)
+	}
 	paths := fs.Args()
 	for _, p := range paths {
 		if _, err := os.Stat(p); err != nil {
@@ -182,8 +188,11 @@ func send(args []string) {
 		}
 	}
 	// 敲码发送(反向配对的发送侧):4-8 位纯数字先按配对码认领;查无此码回退
-	// 口令直传(自定义短口令兼容,与 recv 侧对称)
+	// 口令直传(自定义短口令兼容,与 recv 侧对称)。回退时告知真实原因——
+	// 被拒/过期的码只报「无该口令」是灾难级误导(2026-10-19 易用性走查)
+	pairTried := false
 	if client.IsPairingCode(code) {
+		pairTried = true
 		if _, perr := c.SendByClaim(code, paths, pairCallbacks(false, false)); perr == nil {
 			clearUIProgress()
 			if jsonOut {
@@ -195,7 +204,7 @@ func send(args []string) {
 		} else if !errors.Is(perr, client.ErrPairUnknown) {
 			failJSON(perr)
 		}
-		fmt.Fprintln(os.Stderr, "⚠ 未找到配对码,按口令直传解析…")
+		fmt.Fprintln(os.Stderr, "⚠ 配对码 "+code+" 不存在或已失效(可能已被拒绝、过期或已使用)——按口令直传解析…")
 	}
 	if jsonOut {
 		emitEvent("code", map[string]any{"code": code})
@@ -216,6 +225,9 @@ func send(args []string) {
 		}
 	}
 	if _, err := c.Send(paths, code); err != nil {
+		if pairTried {
+			err = fmt.Errorf("%w(提示: 配对码 %s 已失效——对方拒绝/过期/已使用;口令解析亦未命中,请让对方重新亮码或核对口令)", err, code)
+		}
 		failJSON(err)
 	}
 	clearUIProgress()
@@ -340,8 +352,12 @@ func receive(args []string) {
 		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
 		os.Exit(2)
 	}
-	// 配对码:4-8 位纯数字先按配对码认领;查无此码(非 --pair 强制)回退口令解析
+	// 配对码:4-8 位纯数字先按配对码认领;查无此码(非 --pair 强制)回退口令解析。
+	// 回退时告知真实原因——被拒/过期的码只报「无该口令」是灾难级误导
+	// (2026-10-19 易用性走查实测撞到)
+	pairTried := false
 	if client.IsPairingCode(code) || *pairForce {
+		pairTried = true
 		files, perr := c.ReceivePaired(code, out, pairCallbacks(*yes, *pairStdin))
 		if perr == nil {
 			finishRecv(files, nil)
@@ -349,11 +365,17 @@ func receive(args []string) {
 		}
 		if !errors.Is(perr, client.ErrPairUnknown) || *pairForce {
 			clearUIProgress()
+			if *pairForce && errors.Is(perr, client.ErrPairUnknown) {
+				failJSON(fmt.Errorf("配对码 %s 不存在或已失效(可能已被对方拒绝、过期或已使用)——请让对方重新亮码", code))
+			}
 			failJSON(perr)
 		}
-		fmt.Fprintln(os.Stderr, "⚠ 未找到配对码,按口令直传解析…")
+		fmt.Fprintln(os.Stderr, "⚠ 配对码 "+code+" 不存在或已失效(可能已被拒绝、过期或已使用)——按口令直传解析…")
 	}
 	files, err := c.Receive(code, out)
+	if err != nil && pairTried {
+		err = fmt.Errorf("%w(提示: 配对码 %s 已失效——对方拒绝/过期/已使用;口令解析亦未命中,请让对方重新亮码或核对口令。口令形态: 12 位 XXXX-XXXX-XXXX)", err, code)
+	}
 	finishRecv(files, err)
 }
 
@@ -463,8 +485,8 @@ func pairCallbacks(autoAccept, stdinGate bool) client.PairCallbacks {
 				emitEvent("pair_code", map[string]any{"code": code, "ttl_seconds": int64(ttl.Seconds())})
 				return
 			}
-			fmt.Printf("配对码: %s（%s 内有效）\n请在另一台设备输入该配对码（或执行: p2pc recv %s）...\n",
-				code, ttl.Truncate(time.Second), code)
+			fmt.Printf("配对码: %s（%s内有效）\n请在另一台设备输入该配对码（或执行: p2pc recv %s）...\n",
+				code, humanTTL(ttl), code)
 		},
 		OnRequest: func(req client.PairRequestView) bool {
 			if jsonOut {
@@ -559,6 +581,21 @@ func shortNodeID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// humanTTL 时长人话(5m0s → "5 分钟";Go duration 直出对人不友好)。
+func humanTTL(d time.Duration) string {
+	d = d.Round(time.Second)
+	m := int(d / time.Minute)
+	sec := int(d/time.Second) % 60
+	switch {
+	case m > 0 && sec == 0:
+		return fmt.Sprintf("%d 分钟", m)
+	case m > 0:
+		return fmt.Sprintf("%d 分 %d 秒", m, sec)
+	default:
+		return fmt.Sprintf("%d 秒", sec)
+	}
 }
 
 // finishRecv 接收收尾统一出口（配对/口令/反向三路径共用）。

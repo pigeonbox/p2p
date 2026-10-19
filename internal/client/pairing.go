@@ -27,7 +27,7 @@ import (
 
 // 配对哨兵错误：CLI/网页层按 errors.Is 分流（ErrPairUnknown 触发口令回退）。
 var (
-	ErrPairUnknown = errors.New("配对码不存在或已失效")
+	ErrPairUnknown = errors.New("配对码不存在或已失效(可能已被拒绝、过期或已使用)——请让对方重新亮码")
 	ErrPairBusy    = errors.New("配对码已被其他设备待确认")
 )
 
