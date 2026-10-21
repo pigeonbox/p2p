@@ -26,10 +26,10 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
-github.com/oekit/concurrency v0.14.0 h1:KKPwrxVUoKcAK9EnfSa72hdahXRO4eFx+METSN3zUpU=
-github.com/oekit/concurrency v0.14.0/go.mod h1:K5wV2UwkfvYUQFOawBCmaE29AGhWTGs3hsKu2vvKw4Y=
-github.com/oekit/core v0.8.0 h1:2m87mEZpUlkatXzhSDXXCqFKTOltzKiTn+ZHWfU4IbI=
-github.com/oekit/core v0.8.0/go.mod h1:HhBTwYHU5MUp9tfNvHjfZv6P4yglQmn4jKmz98dUIsM=
+github.com/oekit/concurrency v0.19.0 h1:TkQ9fsYsyCTL+eSJDOoxuUYddkHG+RZUxCuE2WO3098=
+github.com/oekit/concurrency v0.19.0/go.mod h1:2t5QeK3WHWbJVKwTnPiiBZqHxig3fzEPTefGedFU648=
+github.com/oekit/core v0.11.0 h1:HsSg80JPdJJz45P8plETgJDc9uOZrDDsyxngBk9WIx4=
+github.com/oekit/core v0.11.0/go.mod h1:HhBTwYHU5MUp9tfNvHjfZv6P4yglQmn4jKmz98dUIsM=
 github.com/pelletier/go-toml/v2 v2.3.1 h1:MYEvvGnQjeNkRF1qUuGolNtNExTDwct51yp7olPtrEc=
 github.com/pelletier/go-toml/v2 v2.3.1/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
 github.com/prometheus/client_golang v1.24.1 h1:JnJkREXzWxUdCuPFpIWZiPispT9xVV59uiuyR2bPlnU=

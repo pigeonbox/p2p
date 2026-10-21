@@ -8,6 +8,17 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  # 同 tag 的重跑可能与列车触发的运行并发:两边都 gh release create/upload 写
+  # 同一 Release,先写者被静默覆盖。按目标版本分组串行;cancel-in-progress:false
+  # ——发布中途取消比排队更糟。
+  group: ${{ github.workflow }}-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+# 默认只读;推 ghcr / 建 Release 的作业在作业级单独开 contents/packages: write
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/pigeonbox/p2p
@@ -15,27 +26,28 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: ./Dockerfile
@@ -57,11 +69,12 @@ jobs:
   # webkit 依赖),资产名同以 p2pc- 开头,复用下方上传/回挂/checksums 通配。
   p2pc-binaries:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
       - name: 交叉编译 p2pc / p2pc-web(纯静态 CGO=0)
@@ -100,6 +113,7 @@ jobs:
   # 断链必须响(2026-10-08 拔除 continue-on-error:P2P_PAT 失效时 v0.4.4 曾疑似被静默吞掉回挂)。
   attach-to-hub:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: p2pc-binaries
     steps:
       - name: 回挂 p2pc 二进制到 hub
