@@ -363,6 +363,10 @@ func TestWebPairSendToClientRecv(t *testing.T) {
 	// 等敲门请求事件 → 网页批准
 	sawRequest := false
 	var childLogs []string
+	// recvOK: 接收端的**成功**信号(nil)可能先于 exit 事件到达——select 在多个
+	// ready case 间随机挑，收到 nil 时不能当失败(2026-10-21 CI 实测踩中：
+	// "接收端提前失败: <nil>"。nil 是成功信号，不是错误)。
+	recvOK := false
 	for {
 		select {
 		case ev := <-events:
@@ -386,15 +390,22 @@ func TestWebPairSendToClientRecv(t *testing.T) {
 				if !sawRequest {
 					t.Fatal("全程未收到 pair_request 事件")
 				}
-				if err := <-recvErr; err != nil {
-					t.Fatalf("接收端: %v", err)
+				// 成功信号若已先到(见 recvOK)则不必再收；否则在此收结果
+				if !recvOK {
+					if err := <-recvErr; err != nil {
+						t.Fatalf("接收端: %v", err)
+					}
 				}
 				return
 			}
 		case <-deadline:
 			t.Fatal("30s 内未完成配对传输")
 		case err := <-recvErr:
-			t.Fatalf("接收端提前失败: %v", err)
+			// nil = 接收端成功信号(可能早于 exit 事件)；非 nil 才是真失败
+			if err != nil {
+				t.Fatalf("接收端提前失败: %v", err)
+			}
+			recvOK = true
 		}
 	}
 }
