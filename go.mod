@@ -2,6 +2,8 @@ module github.com/pigeonbox/p2p
 
 go 1.26.9
 
+toolchain go1.26.10
+
 require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/klauspost/compress v1.20.1
