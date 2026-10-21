@@ -8,11 +8,11 @@
 package client
 
 import (
-	"strings"
 	"context"
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/oekit/core/version"

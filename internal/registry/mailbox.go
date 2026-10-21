@@ -28,10 +28,10 @@ const (
 
 // SealedEntry 信箱条目(纯密文载体)。
 type SealedEntry struct {
-	From  string `json:"from"`          // 发端 node_id hex(收端据此查名录 box_pub 开箱)
-	Nonce string `json:"nonce"`         // 加密 nonce 载体(对 p2pd 不透明)
-	Boxed string `json:"boxed"`         // base64 密文(收端公钥密封)
-	TS    int64  `json:"ts"`            // 服务端到达 unix 秒(TTL 基准)
+	From  string `json:"from"`  // 发端 node_id hex(收端据此查名录 box_pub 开箱)
+	Nonce string `json:"nonce"` // 加密 nonce 载体(对 p2pd 不透明)
+	Boxed string `json:"boxed"` // base64 密文(收端公钥密封)
+	TS    int64  `json:"ts"`    // 服务端到达 unix 秒(TTL 基准)
 }
 
 // MailboxInput 投递请求体。

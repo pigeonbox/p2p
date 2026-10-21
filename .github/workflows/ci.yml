@@ -17,6 +17,12 @@ jobs:
           cache-dependency-path: go.sum
       - name: Build
         run: go build ./...
+      # gofmt 门禁（2026-10-22 补）：此前 core/server/p2p/contracts 四个 Go 仓的
+      # CI 都没有 gofmt 步，.golangci.yml 也没开 gofmt linter —— 格式漂移无人拦
+      # （core 仓 HEAD 上就压着 19 个漂移文件）。**发现即红，修法是 gofmt -w**，
+      # 不设豁免：豁免即免死金牌（与前端 api-body-types-check 门禁同族教训）。
+      - name: Gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: Vet
         run: go vet ./...
       - name: Test
