@@ -82,7 +82,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           COMMIT="$(git rev-parse --short HEAD)"
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          LDFLAGS="-w -s -X 'github.com/pigeonbox/kit/version.Version=${VERSION}' -X 'github.com/pigeonbox/kit/version.BuildCommit=${COMMIT}' -X 'github.com/pigeonbox/kit/version.BuildTime=${BUILD_TIME}'"
+          LDFLAGS="-w -s -X 'github.com/oekit/core/version.Version=${VERSION}' -X 'github.com/oekit/core/version.BuildCommit=${COMMIT}' -X 'github.com/oekit/core/version.BuildTime=${BUILD_TIME}'"
           mkdir -p out
           build() { GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o "out/$3" ./cmd/$4; }
           build linux   amd64 p2pc-x86_64-unknown-linux-gnu        p2pc

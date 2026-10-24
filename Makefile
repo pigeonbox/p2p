@@ -5,7 +5,7 @@ FUZZTIME ?= 60s
 .PHONY: build test vet lint fuzz run smoke docker clean help
 
 build:  ## 构建二进制 → bin/p2pd
-	go build -trimpath -ldflags "-w -s -X 'github.com/pigeonbox/kit/version.Version=$(VERSION)'" -o bin/$(BINARY) ./cmd/p2pd
+	go build -trimpath -ldflags "-w -s -X 'github.com/oekit/core/version.Version=$(VERSION)'" -o bin/$(BINARY) ./cmd/p2pd
 
 test:   ## 全量测试(-race)
 	go test -race ./...
