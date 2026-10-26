@@ -118,7 +118,11 @@ func (m *Manager) Start(kind, registry, code, path, outDir, relay string, noPunc
 		return fmt.Errorf("定位自身可执行文件: %w", err)
 	}
 	// 统一 --k=v 形式：便于 go test 二进制以 TestMain 分发子模式（见 e2e_test.go）
-	args := []string{"--transfer-child=" + kind, "--registry=" + registry, "--code=" + code}
+	// ⚠️ 口令**不走 argv**：argv 在 Linux 上对同机任意账号可读（/proc/<pid>/cmdline
+	// 默认全员可读），而口令是唯一 bearer 凭据（同机低权账号读到即可抢先接入
+	// 信道取走文件）。口令经 PB_P2P_CODE 环境变量传给子进程（env 仅进程属主
+	// 可读），子进程侧由 resolveChildCode 解析（2026-10-26 审计 P1）。
+	args := []string{"--transfer-child=" + kind, "--registry=" + registry}
 	if kind == "send" || kind == "send-pair" {
 		args = append(args, "--path="+path)
 	} else {
@@ -131,6 +135,7 @@ func (m *Manager) Start(kind, registry, code, path, outDir, relay string, noPunc
 		args = append(args, "--no-punch")
 	}
 	cmd := exec.Command(self, args...)
+	cmd.Env = append(os.Environ(), "PB_P2P_CODE="+code)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		m.mu.Unlock()
@@ -352,11 +357,21 @@ func (m *Manager) wait() {
 	m.broadcast(Event{Type: "exit", Exit: exitCode, Path: path, Paths: paths, Err: msg})
 }
 
+// resolveChildCode 子进程口令来源：--code 旗标（人工调试用）优先，其次
+// PB_P2P_CODE env（父进程 Manager 走的硬化通道——argv 不留码）。
+func resolveChildCode(flagCode string) string {
+	if c := strings.TrimSpace(flagCode); c != "" {
+		return c
+	}
+	return strings.TrimSpace(os.Getenv("PB_P2P_CODE"))
+}
+
 // runTransferChild 隐藏子模式：跑阻塞式 client，日志经 prettyHandler 转
 // 人类可读行（去 time=/level= 噪音）供父进程捕获转发界面，进度走独立标记
 // 行，结尾输出 DONE/ERROR 标记行。返回进程退出码。
 func runTransferChild(o *options) int {
 	slog.SetDefault(slog.New(&prettyHandler{w: os.Stdout}))
+	o.code = resolveChildCode(o.code)
 	c, err := client.New(client.Options{Registry: o.registry, RelayAddr: o.relay, DisablePunch: o.noPunch})
 	if err != nil {
 		return childFail(err)

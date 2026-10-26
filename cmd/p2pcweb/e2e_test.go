@@ -55,6 +55,8 @@ func TestMain(m *testing.M) {
 				o.noPunch = true
 			}
 		}
+		// 口令走 env（父进程 Manager 的硬化通道：argv 不留码）
+		o.code = resolveChildCode(o.code)
 		os.Exit(runTransferChild(o))
 	}
 	os.Exit(m.Run())

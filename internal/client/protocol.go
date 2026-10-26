@@ -33,6 +33,13 @@ const protoVersion = 4
 // 协商帧自那时起才会出现 floor 字段。
 const protoFloor = protoVersion
 
+// frameFormatDowngradeImplemented 是否已落地「按协商结果 agreed 选帧格式」的
+// 降级路径。protoFloor < protoVersion 时它**必须**为 true——否则 floor 只是
+// 一句注释里的承诺:判定放行低版本对端,本端却仍用高版本帧格式 ⇒ 不兼容。
+// 机械守卫见 protocol_test.go 的 TestProtoFloorNeedsDowngradePath:
+// 下一个按注释把 protoFloor 调低的实施者会先撞红这条断言,而不是静默失效。
+const frameFormatDowngradeImplemented = false
+
 // versionFrame 协商帧。floor=可降级到的最低格式版本;由构造省略
 // (floor==proto 不写字段),帧形态与 v0.6.x 逐字节一致。接收侧 floor
 // 缺省按对端 proto 解释(旧客户端只说得出自己那版)。
@@ -74,13 +81,28 @@ func negotiateVersion(ch versionExchanger) (int, error) {
 	if peerFloor == 0 || peerFloor > peer.Proto {
 		peerFloor = peer.Proto // 旧客户端无 floor;声明越界按不可降级处理
 	}
-	agreed := peer.Proto
-	if protoVersion < agreed {
-		agreed = protoVersion
+	return decideVersion(protoVersion, protoFloor, peer.Proto, peerFloor)
+}
+
+// decideVersion 版本判定（纯函数,便于单测钉住规则）：
+// 一致版本 agreed = min(双方 proto),且不得低于双方 floor。
+//
+// 判定用 **localFloor**（本端可降级到的最低格式版本）,不是 localProto:
+// 用 localProto 判 ⇒ 下一个按注释把 protoFloor 调低的实施者(v5 设 4)
+// 仍会把 v4 对端判成「不兼容」⇒ 宣称的 N-1 兼容窗口静默失效
+// (2026-10-26 审计 P2)。错误文案同步打印真实 floor（此前把 protoVersion
+// 印成「不可降级」,与事实相反）。
+func decideVersion(localProto, localFloor, peerProto, peerFloor int) (int, error) {
+	if peerFloor == 0 || peerFloor > peerProto {
+		peerFloor = peerProto // 旧客户端无 floor;声明越界按不可降级处理
 	}
-	if agreed < protoVersion || agreed < peerFloor {
-		return 0, fmt.Errorf("传输协议版本不兼容: 本端 v%d(不可降级),对端 v%d(可低至 v%d)——请升级过旧一端: github.com/pigeonbox/p2p/releases",
-			protoVersion, peer.Proto, peerFloor)
+	agreed := peerProto
+	if localProto < agreed {
+		agreed = localProto
+	}
+	if agreed < localFloor || agreed < peerFloor {
+		return 0, fmt.Errorf("传输协议版本不兼容: 本端 v%d(可低至 v%d),对端 v%d(可低至 v%d)——请升级过旧一端: github.com/pigeonbox/p2p/releases",
+			localProto, localFloor, peerProto, peerFloor)
 	}
 	return agreed, nil
 }

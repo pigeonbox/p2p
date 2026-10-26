@@ -9,11 +9,16 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # 显式 auto：覆盖 setup-go v7 强制的 GOTOOLCHAIN=local ⇒ 将来 go.mod 的
+      # toolchain 地板再抬时，Go 能自动拉取而不是构建失败（2026-10-26 实测：
+      # 浮动 go-version 拿到低于地板的 patch ⇒ 直接构建失败，门禁变噪声）。
+      GOTOOLCHAIN: auto
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.26"
+          go-version: "1.26.10"
           cache-dependency-path: go.sum
       - name: Build
         run: go build ./...

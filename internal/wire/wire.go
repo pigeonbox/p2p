@@ -6,6 +6,12 @@
 //	u32(len) || nonce(12) || ciphertext
 //	plaintext = type(1) || body(len-type-1)
 //
+// nonce 布局（12B）：
+//
+//	[0]      方向标签（'S' 发送方→接收方 / 'R' 接收方→发送方）
+//	[1:4]    epoch（承载实例标识，见 nextEpoch；v2~v4 恒零）
+//	[4:12]   发送序号 seq
+//
 // 密钥来自 PAKE 会话密钥派生（k_data）；无密钥者既不能读也不能产生合法帧——
 // 首帧即完成双向认证（中继路径无 TLS，靠它防令牌窃用）。
 package wire
@@ -13,11 +19,14 @@ package wire
 import (
 	"crypto/cipher"
 	"crypto/hkdf"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"sync"
+	"sync/atomic"
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -46,6 +55,14 @@ const MaxMessageSize = 1 << 20
 // ErrCorrupt 帧无法解密/格式非法（对端无密钥或流被破坏）。
 var ErrCorrupt = errors.New("wire: 帧校验失败")
 
+// ErrEmptyPlaintext 帧解密成功但明文为空（无 type 前缀）——协议违例。
+// 与 ErrCorrupt 分开：长度下界（帧格式层）与本检查（明文层）是两道防线，
+// 守卫须能分辨是哪一道拦下的。
+var ErrEmptyPlaintext = errors.New("wire: 空明文帧(无 type 前缀)")
+
+// ErrReplay 重放帧：入站序号未前进（同一 nonce 二次出现）。
+var ErrReplay = errors.New("wire: 重放帧(序号未前进)")
+
 // Conn 消息化连接。
 //
 // 缓冲复用(2026-10-09):帧缓冲按 Conn 内部复用,ReadMsg 返回的 body 切片
@@ -56,6 +73,11 @@ type Conn struct {
 	rw   io.ReadWriter
 	aead cipher.AEAD
 	seq  uint64 // 发送序号，作为 nonce 前缀 material
+	// epoch 承载实例标识(2026-10-26 审计 P0 修复):同一会话密钥下,中继腿与
+	// 直连腿各自 seq 从 0 起算 ⇒ (key, nonce) 完全重用(ChaCha20-Poly1305
+	// 密钥流重用 + Poly1305 一次性密钥复用 ⇒ 可伪造任意合法帧)。epoch 落在
+	// nonce 的空闲字节 [1:4],把「承载」纳入 nonce 空间。
+	epoch uint32
 
 	// dirTag/peerTag 方向标签（nonce 首字节）。2026-10-05 审计 P1 修复：
 	// 此前两侧共用同一 data 密钥且 seq 均从 0 起算——发送方首帧 MsgMeta 与
@@ -65,6 +87,13 @@ type Conn struct {
 	// 空间恒不相交。
 	dirTag  byte
 	peerTag byte
+
+	// 入站重放窗口(2026-10-26 审计 P2 修复):nonce 随帧明文传输,不校验序号
+	// 则抓到的帧可原样重放并通过认证。每方向记录已接受的最大 seq,seq 不
+	// 前进即拒（窗口随承载实例走——换源=新 Conn=新窗口）。
+	recvMu   sync.Mutex
+	recvSeen bool
+	recvLast uint64
 
 	readBuf  []byte // 入站整帧复用(头+nonce+密文;解密原地覆写)
 	frameBuf []byte // 出站整帧复用(头+nonce+明文;加密原地覆写)
@@ -76,9 +105,50 @@ const (
 	dirRecv byte = 'R' // 接收方→发送方方向的帧
 )
 
+// nonce 中 epoch 的位置与长度（v2~v4 恒零的空闲位）。
+const (
+	epochOffset = 1
+	epochBytes  = 3
+)
+
+// epochSeq 进程内 epoch 计数器（原子）。epoch 取自本计数器 ⇒ **同一进程内**
+// 任意两条 wire.Conn 的 epoch 互不相同 ⇒ 同密钥同方向的 nonce 空间不相交。
+//
+// 为什么用计数器而不是「每连接随机」（2026-10-26 审计 P0 修复的设计推理）：
+//   - nonce 随帧**明文传输**，epoch 无需不可猜测（新鲜性由序号窗口保证）；
+//   - 随机 epoch 在同一会话的两条腿间仍有 2^-24 碰撞概率（计数器是硬保证）；
+//   - 跨进程碰撞无害：同一密钥下只有发送方写 'S' 方向、接收方写 'R' 方向，
+//     方向标签已经把两个方向的 nonce 空间彻底分开。
+//
+// epoch 宽度 24bit ⇒ 单进程 16.7M 条连接后回绕；回绕后同密钥复用需两条
+// 连接恰好同 epoch（实际不可达：单进程连接数远低于该量级）。
+var epochSeq = newEpochSeq()
+
+func newEpochSeq() *atomic.Uint64 {
+	var b [4]byte
+	v := uint64(0)
+	if _, err := rand.Read(b[:]); err == nil {
+		v = uint64(binary.BigEndian.Uint32(b[:])) & 0xFFFFFF
+	}
+	s := &atomic.Uint64{}
+	s.Store(v)
+	return s
+}
+
+// nextEpoch 取下一个进程内唯一的 epoch（24bit）。
+func nextEpoch() uint32 {
+	return uint32(epochSeq.Add(1) & 0xFFFFFF)
+}
+
 // New 以 32 字节会话密钥构造；isSender 标明本端角色（发送侧/接收侧），
 // 决定本端出站帧的方向标签。
 func New(rw io.ReadWriter, key [32]byte, isSender bool) (*Conn, error) {
+	return newConn(rw, key, isSender, nextEpoch())
+}
+
+// newConn 以指定 epoch 构造（epoch=0 即 v2~v4 的旧形态：nonce[1:4] 恒零），
+// 供互操作回归测试构造「旧端」用。
+func newConn(rw io.ReadWriter, key [32]byte, isSender bool, epoch uint32) (*Conn, error) {
 	aead, err := chacha20poly1305.New(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("wire: %w", err)
@@ -87,7 +157,7 @@ func New(rw io.ReadWriter, key [32]byte, isSender bool) (*Conn, error) {
 	if !isSender {
 		dir, peer = dirRecv, dirSend
 	}
-	return &Conn{rw: rw, aead: aead, dirTag: dir, peerTag: peer}, nil
+	return &Conn{rw: rw, aead: aead, dirTag: dir, peerTag: peer, epoch: epoch & 0xFFFFFF}, nil
 }
 
 // Close 关闭底层承载(QUIC 流/中继 TCP;底层不支持时为 no-op)。
@@ -129,6 +199,12 @@ func (c *Conn) WriteMsg(msgType byte, body []byte) error {
 
 	nonce := frame[4 : 4+chacha20poly1305.NonceSize]
 	nonce[0] = c.dirTag
+	// epoch 落在 nonce[1:4]（v2~v4 恒零的空闲位）：同一密钥下的不同承载
+	// （中继腿 / 直连腿）由此获得不相交的 nonce 空间——修 (key, nonce) 重用。
+	// 帧格式不变（nonce 仍是 12B 且逐字节在帧内传输）⇒ 新旧端互操作不受影响。
+	nonce[epochOffset+0] = byte(c.epoch >> 16)
+	nonce[epochOffset+1] = byte(c.epoch >> 8)
+	nonce[epochOffset+2] = byte(c.epoch)
 	binary.BigEndian.PutUint64(nonce[4:], c.seq)
 	c.seq++
 
@@ -150,7 +226,11 @@ func (c *Conn) ReadMsg() (byte, []byte, error) {
 		return 0, nil, err
 	}
 	total := binary.BigEndian.Uint32(head[:])
-	if total < chacha20poly1305.NonceSize+16 || total > MaxMessageSize+chacha20poly1305.NonceSize+16 {
+	// 下界 = nonce(12) + tag(16) + 明文最少 1 字节（type 前缀）。
+	// 旧下界 NonceSize+16 放行了 total==28（零长明文）⇒ AEAD Open 对空明文
+	// 返回长度 0 的切片 ⇒ 后续 plaintext[0] 越界 panic（控制流无 recover ⇒
+	// 整个 p2pc 进程被打挂）。
+	if total < chacha20poly1305.NonceSize+16+1 || total > MaxMessageSize+chacha20poly1305.NonceSize+16 {
 		return 0, nil, ErrCorrupt
 	}
 	if cap(c.readBuf) < int(total) {
@@ -170,6 +250,33 @@ func (c *Conn) ReadMsg() (byte, []byte, error) {
 	plaintext, err := c.aead.Open(ct[:0], nonce, ct, nil)
 	if err != nil {
 		return 0, nil, ErrCorrupt
+	}
+	// 兜底：零长明文（无 type 前缀）不可解引用——长度下界已挡，此处防
+	// 下界被改/绕过时再崩一次。
+	typ, body, err := splitPlaintext(plaintext)
+	if err != nil {
+		return 0, nil, err
+	}
+	// 重放窗口：nonce 明文在帧内，AEAD 只保机密性+完整性、不保新鲜度。
+	// 同一 nonce 二次出现（重放）⇒ 序号不前进 ⇒ 拒。
+	// 判定放在解密之后：未认证的帧不得推进窗口（否则伪造帧可毒化窗口）。
+	seq := binary.BigEndian.Uint64(nonce[4:])
+	c.recvMu.Lock()
+	if c.recvSeen && seq <= c.recvLast {
+		c.recvMu.Unlock()
+		return 0, nil, ErrReplay
+	}
+	c.recvSeen = true
+	c.recvLast = seq
+	c.recvMu.Unlock()
+	return typ, body, nil
+}
+
+// splitPlaintext 拆出消息 type 与 body。零长明文（无 type 前缀）判为协议违例——
+// AEAD 允许空明文（Seal/Open 对空明文不报错），直接取 plaintext[0] 会越界。
+func splitPlaintext(plaintext []byte) (byte, []byte, error) {
+	if len(plaintext) == 0 {
+		return 0, nil, ErrEmptyPlaintext
 	}
 	return plaintext[0], plaintext[1:], nil
 }

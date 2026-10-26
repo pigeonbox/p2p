@@ -50,13 +50,20 @@ func captureStdout(t *testing.T, fn func()) string {
 // TestPrintCodeFormat 口令行格式锁——server supervisor(p2px.scanLines)与
 // desktop sidecar 都按 "口令: XXXX-XXXX-XXXX" 解析 stdout,此格式即契约,
 // 变更必须同步(本测试红=下游解析器同步改)。
+//
+// 接收提示行 2026-10-26 起**不含口令**:口令经 PB_P2P_CODE env 传入
+// (`p2pc recv -`),抄进命令行会留在 shell 历史与进程表里(审计 P1)。
+// 下游解析器只认「口令:」那一行,提示行文案自由。
 func TestPrintCodeFormat(t *testing.T) {
 	got := captureStdout(t, func() { printCode("ABCD-1234-WXYZ") })
 	if !strings.Contains(got, "口令: ABCD-1234-WXYZ\n") {
 		t.Fatalf("口令行格式漂移: %q", got)
 	}
-	if !strings.Contains(got, "p2pc recv ABCD-1234-WXYZ") {
+	if !strings.Contains(got, "p2pc recv -") {
 		t.Fatalf("接收提示行漂移: %q", got)
+	}
+	if strings.Contains(got, "p2pc recv ABCD-1234-WXYZ") {
+		t.Fatalf("接收提示行不得含口令: %q", got)
 	}
 }
 

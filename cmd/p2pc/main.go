@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -259,8 +260,11 @@ func inviteDisplayName(flag string) string {
 // printCode 口令行格式契约：server supervisor（p2px.scanLines）与 desktop
 // sidecar 都按 "口令: XXXX-XXXX-XXXX" 解析 stdout——本函数是格式单源，
 // 变更必须同步下游解析器并 bump 说明（main_test.go 锁定）。
+//
+// 提示行**不含口令**：口令是唯一 bearer 凭据，抄进命令行会留在 shell 历史
+// 与进程表里（2026-10-26 审计 P1）。口令走 PB_P2P_CODE env（argv 不留码）。
 func printCode(code string) {
-	fmt.Printf("口令: %s\n接收方执行: p2pc recv %s\n等待对端接入...\n", code, code)
+	fmt.Printf("口令: %s\n接收方执行: p2pc recv -（口令经 PB_P2P_CODE 环境变量传入，勿写进命令行）\n等待对端接入...\n", code)
 }
 
 // ---- --json NDJSON 事件流(2026-10-14 留位增量,spec §14) ----
@@ -449,28 +453,50 @@ func chooseInteractively(mf client.Manifest) []client.ManifestEntry {
 	if line == "" {
 		return mf.Files
 	}
+	picked := parseSelection(line, mf.Files)
+	if len(picked) == 0 {
+		fmt.Println("未选中任何文件,全部接受。")
+		return mf.Files
+	}
+	return picked
+}
+
+// parseSelection 解析交互式选文件输入("1,3-4")→ 选中的清单条目。//
+// 返回按 **ID 升序**（= 发送侧 manifest 序）——2026-10-26 审计 P1：
+// 接收侧必须与发送方同序处理文件（发送侧恒按 manifest 序发送，接收侧按
+// accepted 列表顺序取条目并回执该条目的 ID）。此前按**用户输入顺序**追加，
+// 降序输入（很自然，如先选大的 "3,1"）会让首个回执带上非首个文件的 ID ⇒
+// 发送侧判「fileAck id 不符」⇒ 整场传输失败（文件其实已落盘并通过校验）。
+//
+// 序号是 1-based 展示序号（对应清单 ID+1）；越界/非法项忽略；重复项去重。
+func parseSelection(line string, files []client.ManifestEntry) []client.ManifestEntry {
 	var picked []client.ManifestEntry
+	seen := map[int]bool{}
+	add := func(e client.ManifestEntry) {
+		if seen[e.ID] {
+			return
+		}
+		seen[e.ID] = true
+		picked = append(picked, e)
+	}
 	for _, part := range strings.Split(line, ",") {
 		part = strings.TrimSpace(part)
 		if i := strings.Index(part, "-"); i > 0 {
 			lo, e1 := strconv.Atoi(strings.TrimSpace(part[:i]))
 			hi, e2 := strconv.Atoi(strings.TrimSpace(part[i+1:]))
-			if e1 != nil || e2 != nil || lo < 1 || hi < lo || hi > len(mf.Files) {
+			if e1 != nil || e2 != nil || lo < 1 || hi < lo || hi > len(files) {
 				continue
 			}
 			for n := lo; n <= hi; n++ {
-				picked = append(picked, mf.Files[n-1])
+				add(files[n-1])
 			}
 			continue
 		}
-		if n, e := strconv.Atoi(part); e == nil && n >= 1 && n <= len(mf.Files) {
-			picked = append(picked, mf.Files[n-1])
+		if n, e := strconv.Atoi(part); e == nil && n >= 1 && n <= len(files) {
+			add(files[n-1])
 		}
 	}
-	if len(picked) == 0 {
-		fmt.Println("未选中任何文件,全部接受。")
-		return mf.Files
-	}
+	sort.Slice(picked, func(i, j int) bool { return picked[i].ID < picked[j].ID })
 	return picked
 }
 

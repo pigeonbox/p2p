@@ -83,3 +83,68 @@ func TestNegotiateLegacyNoFrame(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+// TestProtoFloorNeedsDowngradePath protoFloor < protoVersion 时必须已落地
+// 「按 agreed 选帧格式」的降级路径——否则 floor 只是注释里的承诺:判定会
+// 放行低版本对端,本端却仍用高版本帧格式 ⇒ 静默不兼容。
+//
+// 这条守卫就是「下次按注释改常量不会静默失效」的机械保证:
+// 下一个实施者把 protoFloor 调到 4 会先撞红本断言。
+func TestProtoFloorNeedsDowngradePath(t *testing.T) {
+	if protoFloor < protoVersion && !frameFormatDowngradeImplemented {
+		t.Fatalf("protoFloor=v%d < protoVersion=v%d,但未实现「按 agreed 选帧格式」的降级路径 ⇒ N-1 兼容窗口是空承诺",
+			protoFloor, protoVersion)
+	}
+}
+
+// TestDecideVersionFloorSemantics 判定规则必须以 floor 为准（不是 proto）:
+// 本端 v5(floor=4) 对 v4 对端 ⇒ 放行 agreed=4;对 v3 对端 ⇒ 拒。
+func TestDecideVersionFloorSemantics(t *testing.T) {
+	cases := []struct {
+		name                   string
+		localProto, localFloor int
+		peerProto, peerFloor   int
+		wantAgreed             int
+		wantErr                bool
+	}{
+		{"同版", 4, 4, 4, 4, 4, false},
+		{"过旧对端", 4, 4, 3, 3, 0, true},
+		{"v5 本端 floor=4 放行 v4 对端", 5, 4, 4, 4, 4, false},
+		{"v5 本端 floor=4 拒 v3 对端", 5, 4, 3, 3, 0, true},
+		{"v4 本端对 v5 不可降级对端", 4, 4, 5, 5, 0, true},
+		{"v4 本端对 v5 可降级对端", 4, 4, 5, 4, 4, false},
+		{"对端无 floor 按其 proto", 5, 4, 4, 0, 4, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agreed, err := decideVersion(tc.localProto, tc.localFloor, tc.peerProto, tc.peerFloor)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("应报错却成功(agreed=%d)", agreed)
+				}
+				if !strings.Contains(err.Error(), "github.com/pigeonbox/p2p/releases") {
+					t.Fatalf("错误须带下载指引: %v", err)
+				}
+				return
+			}
+			if err != nil || agreed != tc.wantAgreed {
+				t.Fatalf("agreed=%d err=%v,期望 agreed=%d", agreed, err, tc.wantAgreed)
+			}
+		})
+	}
+}
+
+// 错误文案必须打印**真实 floor**（此前印「不可降级」与事实相反）。
+func TestVersionErrorMentionsRealFloor(t *testing.T) {
+	_, err := decideVersion(5, 4, 3, 3)
+	if err == nil {
+		t.Fatal("应报错")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "可低至 v4") {
+		t.Fatalf("错误文案未打印本端真实 floor: %q", msg)
+	}
+	if strings.Contains(msg, "不可降级") {
+		t.Fatalf("错误文案仍印「不可降级」: %q", msg)
+	}
+}

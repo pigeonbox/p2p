@@ -263,9 +263,10 @@ func sendAll(getX srcGetter, paths []string, progress func(sent, total int64), b
 			_ = x.ctrl.WriteMsg(wire.MsgSwap, nil)
 			x = getX()
 			progress(0, 0)
-		} else {
-			x = getX() // 文件边界:常规取源
 		}
+		// else 分支**不换源**:承载只在收到/发出 MsgSwap 时切换(2026-10-26 审计
+		// P2 修复)——此前此处无条件 getX(),直连就绪瞬间(与 MsgSwap 之间)即
+		// 擅自换承载,而对端还留在旧承载上 ⇒ 双方读写不同流 ⇒ 60s 超时卡死。
 		f, ferr := os.Open(absPaths[i])
 		if ferr != nil {
 			close(stopProgress)
@@ -282,7 +283,11 @@ func sendAll(getX srcGetter, paths []string, progress func(sent, total int64), b
 	}
 	close(stopProgress)
 	fin, _ := json.Marshal(finalMsg{OK: true, Message: fmt.Sprintf("%d 个文件", count)})
-	if err := getX().ctrl.WriteMsg(wire.MsgFinal, fin); err != nil {
+	// final 写在**本轮实际使用的承载**上（不是重新 getX()）：接收方是在它
+	// 读文件的同一条承载上等 final（2026-10-26 审计 P2 修复）。重新取源会
+	// 在「升级恰好在最后一个文件之后完成」时把 final 写到对端没在读的另一
+	// 条承载上 ⇒ 对端 60s 超时。
+	if err := x.ctrl.WriteMsg(wire.MsgFinal, fin); err != nil {
 		return count, fmt.Errorf("final 发送: %w", err)
 	}
 	return count, nil
@@ -439,7 +444,22 @@ func recvAll(getX srcGetter, dir string, choose func(mf manifestMsg) []manifestE
 	}
 	accepted := mf.Files
 	if choose != nil {
-		accepted = choose(mf)
+		// 接收方必须与发送方**同序**处理文件：发送方恒按 manifest 序发送，
+		// 接收方按 accepted 列表顺序取条目（e = accepted[0]）。
+		// 2026-10-26 审计 P1 修复：此前直接用 choose() 的返回值（用户输入
+		// 顺序），降序输入（如 "2,1"）会让首个回执带上非首个文件的 ID ⇒
+		// 发送侧 fileAck id 不符 ⇒ 整场传输失败（文件其实已落盘）。
+		// 归一：按 manifest 序重建（同时天然去重、忽略清单外条目）。
+		picked := map[int]bool{}
+		for _, e := range choose(mf) {
+			picked[e.ID] = true
+		}
+		accepted = nil
+		for _, e := range mf.Files {
+			if picked[e.ID] {
+				accepted = append(accepted, e)
+			}
+		}
 	}
 	ids := make([]int, 0, len(accepted))
 	var total int64
@@ -473,8 +493,10 @@ func recvAll(getX srcGetter, dir string, choose func(mf manifestMsg) []manifestE
 
 	var out []string
 	for range accepted {
-		// 边界:先读一帧——若是 MsgSwap 则换源(先通后优),否则即为下一文件的 meta
-		x = getX()
+		// 边界:先读一帧——若是 MsgSwap 则换源(先通后优),否则即为下一文件的 meta。
+		// 承载**不由本地状态决定**：收到对端 MsgSwap 才换(2026-10-26 审计 P2
+		// 修复)——此前循环开头无条件 getX(),接收侧按本地 sw.cur 抢跑换源,
+		// 与发送侧换源时刻差一个调度片 ⇒ 双方读写不同流 ⇒ 60s 超时卡死。
 		nextType, nextBody, err := x.ctrl.ReadMsg()
 		if err != nil {
 			close(stopProgress)
@@ -506,8 +528,14 @@ func recvAll(getX srcGetter, dir string, choose func(mf manifestMsg) []manifestE
 		out = append(out, p)
 	}
 	close(stopProgress)
+	// final 是强制协议帧：读不到即失败（2026-10-26 审计 P2 修复——此前
+	// err != nil 时直接 return out, nil，把「对端在最后一个 ack 之后崩溃/
+	// 断链」吞成成功，调用方无法区分「对端确认完成」与「链路中途断了」）。
 	msgType, _, err = x.ctrl.ReadMsg()
-	if err == nil && msgType != wire.MsgFinal {
+	if err != nil {
+		return out, fmt.Errorf("final 接收: %w", err)
+	}
+	if msgType != wire.MsgFinal {
 		return out, fmt.Errorf("期望 final 帧,得到 type=%d", msgType)
 	}
 	return out, nil
