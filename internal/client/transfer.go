@@ -418,6 +418,36 @@ func awaitFileAck(ctrl *wire.Conn, id int) error {
 	return nil
 }
 
+// swapCarrierWaitBudget 等新承载就位的上限（2026-10-26）。
+//
+// 背景：换源（MsgSwap）时**发送侧**已切到直连承载，而**接收侧**的直连承载
+// 由升级协程异步 store ⇒ 可能晚一个调度片才就位。此时 getX() 返回的还是旧
+// 承载 ⇒ 双方读写不同流 ⇒ 对端空闲超时（CI 上表现为「final 接收: timeout」，
+// 60s 后才失败 ⇒ 极难定位）。⇒ 给一个**有界**的等待窗口。
+const swapCarrierWaitBudget = 5 * time.Second
+
+// awaitSwappedCarrier 等发送侧换源后的**新承载**就位。
+//
+// 返回与 old **不同**的那条承载；若在预算内没等到 ⇒ 返回明确错误
+// （而不是让调用方拿着旧承载去读、再等 60s 超时得到一条无关的错误信息）。
+func awaitSwappedCarrier(getX srcGetter, old *xport) (*xport, error) {
+	if getX == nil {
+		return nil, errors.New("swap 后等待新承载: 取源函数为空")
+	}
+	const step = 2 * time.Millisecond
+	deadline := time.Now().Add(swapCarrierWaitBudget)
+	for {
+		cur := getX()
+		if cur != nil && cur != old {
+			return cur, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("swap 后等待新承载就位超时(%.0fs):发送侧已换源,本侧直连承载未就位(升级协程未 store)——双方读写不同流", swapCarrierWaitBudget.Seconds())
+		}
+		time.Sleep(step)
+	}
+}
+
 // recvAll v4 接收主流程。choose 非 nil 时由调用方决定接受哪些文件(部分接受)。
 func recvAll(getX srcGetter, dir string, choose func(mf manifestMsg) []manifestEntry, progress func(got, total int64)) ([]string, error) {
 	x := getX()
@@ -503,7 +533,21 @@ func recvAll(getX srcGetter, dir string, choose func(mf manifestMsg) []manifestE
 			return out, fmt.Errorf("meta 接收: %w", err)
 		}
 		if nextType == wire.MsgSwap {
-			x = getX() // 双方已就绪,换直连
+			// 换源必须等**新承载真的就位**（2026-10-26 实录）：
+			// 收到 MsgSwap 只说明**发送侧**已换源；接收侧自己的直连承载可能
+			// **还没 store 完**（升级协程与读协程差一个调度片）⇒ 此时 getX()
+			// 返回的还是**旧承载** ⇒ 双方读写不同流 ⇒ 对端 60s 空闲超时
+			// （本仓 CI 长期红在「final 接收: timeout: no recent network activity」，
+			//  且该失败在**改动前**的 main 上就存在 ⇒ 既存竞态，非本次引入）。
+			// ⇒ 轮询等新承载就位（最多 swapCarrierWaitBudget），拿到**不同的**
+			//   承载才换；等不到就报明确错误（而不是让调用方在 60s 后收到
+			//   一条与真实原因无关的超时）。
+			swapped, waitErr := awaitSwappedCarrier(getX, x)
+			if waitErr != nil {
+				close(stopProgress)
+				return out, waitErr
+			}
+			x = swapped
 			nextType, nextBody, err = x.ctrl.ReadMsg()
 			if err != nil {
 				close(stopProgress)
