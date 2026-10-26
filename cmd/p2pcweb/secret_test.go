@@ -71,7 +71,7 @@ func TestResolveChildCode(t *testing.T) {
 	if got := resolveChildCode("FLAG-CODE-5678"); got != "FLAG-CODE-5678" {
 		t.Fatalf("旗标应优先: %q", got)
 	}
-	os.Unsetenv("PB_P2P_CODE")
+	_ = os.Unsetenv("PB_P2P_CODE")
 	if got := resolveChildCode("  "); got != "" {
 		t.Fatalf("无来源应为空: %q", got)
 	}
