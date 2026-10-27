@@ -238,7 +238,7 @@ func sendAll(getX srcGetter, paths []string, progress func(sent, total int64), b
 	var sent, done atomic.Int64
 	stopProgress := make(chan struct{})
 	if progress != nil {
-		go func() {
+		async.GoSafeLabeled("transfer-progress-send", func() {
 			t := time.NewTicker(200 * time.Millisecond)
 			defer t.Stop()
 			for {
@@ -250,7 +250,7 @@ func sendAll(getX srcGetter, paths []string, progress func(sent, total int64), b
 					progress(sent.Load(), total)
 				}
 			}
-		}()
+		})
 	}
 
 	count := 0
@@ -506,7 +506,7 @@ func recvAll(getX srcGetter, dir string, choose func(mf manifestMsg) []manifestE
 	var got atomic.Int64
 	stopProgress := make(chan struct{})
 	if progress != nil {
-		go func() {
+		async.GoSafeLabeled("transfer-progress-recv", func() {
 			t := time.NewTicker(200 * time.Millisecond)
 			defer t.Stop()
 			for {
@@ -518,7 +518,7 @@ func recvAll(getX srcGetter, dir string, choose func(mf manifestMsg) []manifestE
 					progress(got.Load(), total)
 				}
 			}
-		}()
+		})
 	}
 
 	var out []string
@@ -848,7 +848,7 @@ func sendFileMulti(x *xport, f *os.File, size int64, opts transferOpts, progress
 	var sent atomic.Int64
 	stopProgress := make(chan struct{})
 	if progress != nil {
-		go func() {
+		async.GoSafeLabeled("transfer-progress-detail", func() {
 			t := time.NewTicker(200 * time.Millisecond)
 			defer t.Stop()
 			for {
@@ -860,7 +860,7 @@ func sendFileMulti(x *xport, f *os.File, size int64, opts transferOpts, progress
 					progress(sent.Load())
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(stopProgress)

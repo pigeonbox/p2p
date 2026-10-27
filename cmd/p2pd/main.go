@@ -103,7 +103,7 @@ func main() {
 	})
 
 	// 清扫循环:物理回收过期租约/公告并刷新活跃量指标。
-	go func() {
+	async.GoSafeLabeled("p2pd-sweep-loop", func() {
 		t := time.NewTicker(sweepInterval)
 		defer t.Stop()
 		for {
@@ -125,7 +125,7 @@ func main() {
 				})
 			}
 		}
-	}()
+	})
 
 	// UDP 地址反射器（打洞前提;与 HTTP 同端口,协议不同互不冲突）。
 	if cfg.Reflector.Enabled {
@@ -166,7 +166,7 @@ func main() {
 		if interval <= 0 {
 			interval = 30 * time.Second
 		}
-		go func() {
+		async.GoSafeLabeled("p2pd-snapshot-loop", func() {
 			t := time.NewTicker(interval)
 			defer t.Stop()
 			for {
@@ -183,7 +183,7 @@ func main() {
 					})
 				}
 			}
-		}()
+		})
 	}
 
 	httpSrv := &http.Server{
@@ -195,6 +195,10 @@ func main() {
 	}
 
 	errCh := make(chan error, 1)
+	// ⚠️ **主服务协程，保留裸 go（有意例外，已登记在 internal/convention 的禁裸 go 白名单）**：
+	// 进程的存在意义就是它 ⇒ panic 应**带崩进程**让 supervisor 重启（租约会过期、
+	// 对端会自动绕行，节点"活着但不服务"比直接死掉更难诊断）。
+	// 不能改成 async.GoSafe：panic 被收编后 errCh 永不投递 ⇒ 下方 select 永久挂死。
 	go func() {
 		var err error
 		if cfg.Server.TLSCert != "" {
@@ -234,10 +238,10 @@ func main() {
 	}
 	mgr.Add("http", func(ctx context.Context) error { return httpSrv.Shutdown(ctx) }, 10*time.Second)
 	shutdownDone := make(chan struct{})
-	go func() {
+	async.GoSafeLabeled("p2pd-shutdown-watch", func() {
 		mgr.Listen(os.Interrupt, syscall.SIGTERM)
 		close(shutdownDone)
-	}()
+	})
 
 	select {
 	case <-shutdownDone:

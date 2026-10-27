@@ -161,7 +161,7 @@ func NewPairingService(ctx context.Context, cfg PairingConfig, nodes nodeLeaser)
 		nodes:    nodes,
 		sessions: make(map[string]*pairSession),
 	}
-	go s.janitor(ctx)
+	async.GoSafeLabeled("pairing-janitor", func() { s.janitor(ctx) })
 	return s
 }
 

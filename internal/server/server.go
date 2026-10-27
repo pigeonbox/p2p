@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/oekit/concurrency/async"
 	"log/slog"
 	"net"
 	"net/http"
@@ -31,10 +32,10 @@ func newKeyedLimiter(ctx context.Context, r rate.Limit, burst int) *ratelimit.Ke
 	kl := ratelimit.NewKeyedLimiter(func() ratelimit.Limiter {
 		return ratelimit.NewTokenBucket(r, burst)
 	}, limiterIdleTTL)
-	go func() {
+	async.GoSafeLabeled("server-limiter-close", func() {
 		<-ctx.Done()
 		kl.Close()
-	}()
+	})
 	return kl
 }
 

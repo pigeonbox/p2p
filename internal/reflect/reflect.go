@@ -13,6 +13,7 @@ package reflect
 import (
 	"context"
 	"fmt"
+	"github.com/oekit/concurrency/async"
 	"log/slog"
 	"net"
 	"strings"
@@ -32,10 +33,10 @@ func Serve(ctx context.Context, conn *net.UDPConn, log *slog.Logger) {
 		return ratelimit.NewTokenBucket(10, 20) // 每 IP 10/s 突发 20
 	}, 30*time.Minute)
 	defer lim.Close()
-	go func() {
+	async.GoSafeLabeled("reflect-limiter-close", func() {
 		<-ctx.Done()
 		lim.Close()
-	}()
+	})
 	buf := make([]byte, len(reqMagic)+8)
 	for {
 		select {

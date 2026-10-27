@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/oekit/concurrency/async"
 	"io"
 	"net/http"
 	"os"
@@ -72,7 +73,7 @@ func runTransfer(base string) error {
 		return err
 	}
 	errCh := make(chan error, 1)
-	go func() {
+	async.GoSafeLabeled("smokegen-send", func() {
 		c, err := client.New(client.Options{Registry: base, NodeKeyPath: filepath.Join(dir, "s.key"), RelayAddr: relayAddrOf(base), Quiet: true})
 		if err != nil {
 			errCh <- err
@@ -80,7 +81,7 @@ func runTransfer(base string) error {
 		}
 		_, err = c.Send([]string{src}, code)
 		errCh <- err
-	}()
+	})
 	// 等公告就绪
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {

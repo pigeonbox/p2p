@@ -82,7 +82,7 @@ func NewHub(ctx context.Context, cfg Config, reg *registry.Service, m Metrics) *
 		now:      time.Now,
 		sessions: make(map[string]*session),
 	}
-	go h.janitor(ctx)
+	async.GoSafeLabeled("signaling-janitor", func() { h.janitor(ctx) })
 	return h
 }
 
