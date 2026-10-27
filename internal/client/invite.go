@@ -57,7 +57,7 @@ func (r *registryAPI) registerPresence(ctx context.Context, n *nodeIdentity, nam
 		payload = append(payload, disc, "", boxPubHex) // public_url 留空(sticky 保留既有)
 	}
 	body["sig"] = n.sign(registry.BuildPayload(payload...))
-	return r.do(ctx, "POST", "/v1/nodes/register", body, 200, nil)
+	return r.do(ctx, "POST", "/v1/nodes/register", body, nil)
 }
 
 // directory 在线名录。
@@ -65,7 +65,7 @@ func (r *registryAPI) directory(ctx context.Context) ([]registry.DirectoryEntry,
 	var out struct {
 		Nodes []registry.DirectoryEntry `json:"nodes"`
 	}
-	if err := r.do(ctx, "GET", "/v1/directory", nil, 200, &out); err != nil {
+	if err := r.do(ctx, "GET", "/v1/directory", nil, &out); err != nil {
 		return nil, err
 	}
 	return out.Nodes, nil
@@ -74,7 +74,7 @@ func (r *registryAPI) directory(ctx context.Context) ([]registry.DirectoryEntry,
 // mailboxPost 密封邀请投递。
 func (r *registryAPI) mailboxPost(ctx context.Context, to, from, nonce, boxed string) error {
 	body := map[string]any{"from": from, "nonce": nonce, "boxed": boxed}
-	return r.do(ctx, "POST", "/v1/mailbox/"+to, body, 200, nil)
+	return r.do(ctx, "POST", "/v1/mailbox/"+to, body, nil)
 }
 
 // mailboxPop 弹出全部密封条目(取后即删)。
@@ -82,7 +82,7 @@ func (r *registryAPI) mailboxPop(ctx context.Context, to string) ([]registry.Sea
 	var out struct {
 		Entries []registry.SealedEntry `json:"entries"`
 	}
-	if err := r.do(ctx, "GET", "/v1/mailbox/"+to, nil, 200, &out); err != nil {
+	if err := r.do(ctx, "GET", "/v1/mailbox/"+to, nil, &out); err != nil {
 		return nil, err
 	}
 	return out.Entries, nil

@@ -1,14 +1,13 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/oekit/pkg/httpjson"
 	"net/http"
 	"strconv"
 	"time"
@@ -65,7 +64,7 @@ func (r *registryAPI) register(ctx context.Context, n *nodeIdentity, name string
 	payload := registry.BuildPayload(n.id, "http://direct.invalid", name, ver,
 		"direct", fmt.Sprint(int64(ttl/time.Second)), body["nonce"].(string), fmt.Sprint(body["ts"].(int64)))
 	body["sig"] = n.sign(payload)
-	return r.do(ctx, http.MethodPost, "/v1/nodes/register", body, http.StatusOK, nil)
+	return r.do(ctx, http.MethodPost, "/v1/nodes/register", body, nil)
 }
 
 // announce 宣告口令路由（code 原样含连字符；哈希在服务端约定一侧计算）。
@@ -77,7 +76,7 @@ func (r *registryAPI) announce(ctx context.Context, n *nodeIdentity, code string
 		"size_hint": 0, "ts": ts,
 	}
 	body["sig"] = n.sign(registry.BuildPayload(n.id, hash, fmt.Sprint(expires.Unix()), "0", fmt.Sprint(ts)))
-	return r.do(ctx, http.MethodPost, "/v1/announces", body, http.StatusOK, nil)
+	return r.do(ctx, http.MethodPost, "/v1/announces", body, nil)
 }
 
 // resolve 解析口令→源节点（接收方用于身份钉定）。
@@ -87,7 +86,7 @@ func (r *registryAPI) resolve(ctx context.Context, code string) (nodeID string, 
 		NodeID string `json:"node_id"`
 		URL    string `json:"url"`
 	}
-	if err := r.do(ctx, http.MethodGet, "/v1/resolve/"+hash, nil, http.StatusOK, &out); err != nil {
+	if err := r.do(ctx, http.MethodGet, "/v1/resolve/"+hash, nil, &out); err != nil {
 		return "", err
 	}
 	return out.NodeID, nil
@@ -97,36 +96,45 @@ func (r *registryAPI) resolve(ctx context.Context, code string) (nodeID string, 
 func (r *registryAPI) deregister(ctx context.Context, n *nodeIdentity) {
 	body := map[string]any{"node_id": n.id, "ts": time.Now().Unix()}
 	body["sig"] = n.sign(registry.BuildPayload(n.id, fmt.Sprint(body["ts"].(int64))))
-	_ = r.do(ctx, http.MethodDelete, "/v1/nodes/"+n.id, body, http.StatusOK, nil)
+	_ = r.do(ctx, http.MethodDelete, "/v1/nodes/"+n.id, body, nil)
 }
 
-func (r *registryAPI) do(ctx context.Context, method, path string, body any, wantStatus int, out any) error {
-	var rd io.Reader
+// do 发一次 HTTP+JSON 调用（走 **oekit/pkg/httpjson**：ctx 感知构造请求 →
+// 限容读体 → 状态码检查（错误体 rune 安全截断）→ JSON 解码，单源纪律）。
+//
+// ⚠️ 状态码判定从「精确等于期望码」放宽为「2xx 即成功」（httpjson 口径）——
+// 本仓调用的注册中心端点恒回 200 ⇒ 无实际差异。
+//
+// ⚠️ doRaw（配对流程）**不走本函数**：它要原始状态码 + 报文（404/409 映射、
+// 错误文案带报文），与 httpjson 的语义不同 ⇒ 保持原样。
+func (r *registryAPI) do(ctx context.Context, method, path string, body any, out any) error {
+	var payload []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		rd = bytes.NewReader(b)
+		payload = b
 	}
-	req, err := http.NewRequestWithContext(ctx, method, r.base+path, rd)
-	if err != nil {
-		return err
+	req := httpjson.Request{
+		Method: method,
+		URL:    r.base + path,
+		Body:   payload,
+		Header: func(h http.Header) {
+			if payload != nil {
+				h.Set("Content-Type", "application/json")
+			}
+		},
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	// out 为 nil 时响应体仍需被消费（httpjson 走 Unmarshal，out=nil 会报
+	// "json: Unmarshal(nil)"）⇒ 用 RawMessage 承接丢弃。
+	target := out
+	if target == nil {
+		var discard json.RawMessage
+		target = &discard
 	}
-	resp, err := r.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != wantStatus {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		return fmt.Errorf("%s %s: 期望 %d 实际 %d: %s", method, path, wantStatus, resp.StatusCode, b)
-	}
-	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
+	if err := httpjson.DoJSON(ctx, r.http, req, target); err != nil {
+		return fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	return nil
 }
