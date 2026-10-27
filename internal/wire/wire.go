@@ -36,7 +36,11 @@ const (
 	MsgMeta  byte = 1 // 发送方→接收方：JSON {name,size,sha256}
 	MsgReady byte = 2 // 接收方→发送方：JSON {offset}（断点续传起点）
 	MsgChunk byte = 3 // 发送方→接收方：原始文件字节
-	MsgFinal byte = 4 // 接收方→发送方：JSON {ok,message}
+	// MsgFinal 由**发送方**发给接收方（v4 协议；此处注释此前写反成
+	// 「接收方→发送方」——那是更早的协议形态留下的，与实现不一致 ⇒
+	// 曾据此把「末帧交付的等待方向」搞反，见 internal/client/transport.go
+	// 的 xport.finish 注释）。
+	MsgFinal byte = 4 // 发送方→接收方：JSON {ok,message}
 	// v3 多流并行(2026-10-09):控制流信令帧 + 数据流分段帧
 	MsgPlan byte = 5 // 发送方→接收方(控制流)：JSON {streams}——将打开的数据流条数
 	MsgSeg  byte = 6 // 发送方→接收方(数据流)：JSON {start}——本流起始偏移,后随 chunk 至流 FIN

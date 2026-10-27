@@ -148,6 +148,91 @@ func TestAwaitSwappedCarrierTimeout(t *testing.T) {
 	}
 }
 
+// TestSendAllAwaitsNewCarrierAfterSwap 发送侧换源时**新承载尚未就位** ⇒
+// 发送侧必须等它（与接收侧对称），而不是留在旧承载上发后续帧。
+//
+// ## 缺陷（2026-10-28 实录，同一根因第三轮复发）
+//
+// 接收侧有 awaitSwappedCarrier（2026-10-26 补），**发送侧没有对称实现**：
+// 换源处直接 `x = getX()` ⇒ 拿到「store 前的旧承载」⇒ 发送侧留在旧流，
+// 而接收侧已按 MsgSwap 切到新流 ⇒ 双方读写不同流 ⇒ 接收侧在新流上等 final ⇒
+// 60s 空闲超时（quic-go "no recent network activity"）。
+//
+// **方向性证据**：QUIC 角色是「发送方=服务端(listen/accept)、接收方=客户端
+// (dial)」⇒ 接收方(dial)承载**先**就位、发送方(accept)**后**就位 ⇒
+// 发送侧抢跑拿到旧承载是**结构性偏高**的，不是偶然。
+//
+// ## 负对照
+//
+// 把发送侧的 awaitSwappedCarrier 改回「一次 getX() 就换」⇒ 本用例红
+// （发送侧把 meta/chunk/final 全写在旧承载上，接收侧在新承载上等 ⇒ 卡死）。
+func TestSendAllAwaitsNewCarrierAfterSwap(t *testing.T) {
+	key := [32]byte{99}
+	sndA, rcvA := pipeXport(t, key) // 旧承载（中继腿）
+	sndB, rcvB := pipeXport(t, key) // 新承载（直连腿）
+
+	// 发送侧：前 3 次取源都返回**旧承载** ⇒ 模拟「升级协程还没 store 直连承载」
+	const lateCarrierCalls = 3
+	var sndCalls atomic.Int64
+	getXSnd := func() *xport {
+		if sndCalls.Add(1) <= lateCarrierCalls {
+			return sndA
+		}
+		return sndB
+	}
+	// 接收侧：第 1 次取源是初始承载，之后新承载已就位（dial 方先就位）
+	var rcvCalls atomic.Int64
+	getXRcv := func() *xport {
+		if rcvCalls.Add(1) <= 1 {
+			return rcvA
+		}
+		return rcvB
+	}
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.bin")
+	content := "carrier-wait-payload"
+	if err := os.WriteFile(src, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := t.TempDir()
+
+	recvErr := make(chan error, 1)
+	go func() {
+		_, err := recvAll(getXRcv, outDir, nil, nil)
+		recvErr <- err
+	}()
+
+	sendErr := make(chan error, 1)
+	go func() {
+		// boundary 在文件边界触发一次换源（与真实「先通后优」同形）
+		var swapped atomic.Bool
+		_, err := sendAll(getXSnd, []string{src}, func(int64, int64) {}, func() bool {
+			return swapped.CompareAndSwap(false, true)
+		})
+		sendErr <- err
+	}()
+
+	select {
+	case err := <-recvErr:
+		if err != nil {
+			t.Fatalf("接收侧应成功（发送侧必须等新承载就位）: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatalf("recvAll 15s 未返回（发送侧抢跑留在旧承载 ⇒ 双方读写不同流；发送侧取源 %d 次）", sndCalls.Load())
+	}
+	if err := <-sendErr; err != nil {
+		t.Fatalf("发送侧: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(outDir, "src.bin"))
+	if err != nil || string(got) != content {
+		t.Fatalf("落盘内容错: %q err=%v", got, err)
+	}
+	if n := sndCalls.Load(); n <= lateCarrierCalls {
+		t.Fatalf("发送侧取源只被调用 %d 次 ⇒ 换源后没等新承载（应轮询等它）", n)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (func() bool {
 		for i := 0; i+len(sub) <= len(s); i++ {

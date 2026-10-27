@@ -259,10 +259,32 @@ func sendAll(getX srcGetter, paths []string, progress func(sent, total int64), b
 			continue
 		}
 		if boundary != nil && boundary() {
-			// 先通后优:直连就绪,在旧承载(中继)上发换源标记,再换源
+			// 先通后优:直连就绪,在旧承载(中继)上发换源标记,再等**本侧直连
+			// 承载**真的就位后换源(2026-10-28 实录)。
+			//
+			// ⚠️ 为什么必须等(与接收侧 awaitSwappedCarrier **对称**):
+			//   换源后双方的读写流必须**同时**切到新承载。此前发送侧直接
+			//   `x = getX()` ⇒ 拿到的是「store 前的旧承载」⇒ 发送侧留在旧流,
+			//   而接收侧已切到新流 ⇒ 接收侧在新流上等 final ⇒ 60s 空闲超时
+			//   (quic-go "no recent network activity")——本仓 CI 长期红在
+			//   「final 接收: timeout」,同一根因已复发三轮。
+			//   **方向性证据**:QUIC 角色是「发送方=服务端(listen/accept)、
+			//   接收方=客户端(dial)」⇒ 接收方(dial)承载**先**就位、发送方
+			//   (accept)**后**就位 ⇒ 发送侧抢跑拿到旧承载是**结构性偏高**的。
+			//   ⇒ 等不到就在预算内**明确失败**(与接收侧同口径),而不是让对端
+			//   在 60s 后收到一条与真实原因无关的超时。
 			_ = x.ctrl.WriteMsg(wire.MsgSwap, nil)
-			x = getX()
-			progress(0, 0)
+			swapped, werr := awaitSwappedCarrier(getX, x)
+			if werr != nil {
+				close(stopProgress)
+				return count, werr
+			}
+			x = swapped
+			// progress 可能为 nil（recvAll 侧有 nil 保护，sendAll 侧此前没有 ⇒
+			// 换源路径传 nil 会 panic）⇒ 这里与 recvAll 对齐。
+			if progress != nil {
+				progress(0, 0)
+			}
 		}
 		// else 分支**不换源**:承载只在收到/发出 MsgSwap 时切换(2026-10-26 审计
 		// P2 修复)——此前此处无条件 getX(),直连就绪瞬间(与 MsgSwap 之间)即
