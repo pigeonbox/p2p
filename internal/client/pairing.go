@@ -11,14 +11,13 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"github.com/oekit/pkg/httpjson"
 	"net/http"
 	"time"
 
@@ -160,27 +159,27 @@ func (r *registryAPI) pairRequests(ctx context.Context, n *nodeIdentity) ([]pair
 	return out.Sessions, 0, nil
 }
 
-// doRaw 带状态码的请求：非 2xx 返回 (status, body, nil) 由调用方映射语义。
+// doRaw 带状态码的请求：返回 (status, body, nil) 由调用方映射语义。
+//
+// 收编到 **oekit/pkg/httpjson.DoRaw**（v0.28.1 起）：DoJSON 的口径是
+// 「2xx 即成功 + 错误体截断到 200 runes 的摘要」，而本流程要**原文**报文
+// （pairHTTPError 把它带进错误文案）且要**按状态码映射自己的语义**
+// （404/409 → ErrPairUnknown/ErrPairBusy 两个不同哨兵）⇒ DoJSON 不适用。
+// DoRaw：任何状态码都返回 err=nil + 原始 status/body，由调用方自行判定；
+// 读体上限 8KB（防异常服务端刷屏放大内存）。
 func (r *registryAPI) doRaw(ctx context.Context, method, path string, body any) (int, []byte, error) {
-	b, err := json.Marshal(body)
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return 0, nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, r.base+path, bytes.NewReader(b))
-	if err != nil {
-		return 0, nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := r.http.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-	if err != nil {
-		return resp.StatusCode, nil, err
-	}
-	return resp.StatusCode, raw, nil
+	return httpjson.DoRaw(ctx, r.http, httpjson.Request{
+		Method: method,
+		URL:    r.base + path,
+		Body:   payload,
+		Header: func(h http.Header) {
+			h.Set("Content-Type", "application/json")
+		},
+	}, 8<<10)
 }
 
 // pairHTTPError 服务端错误码 → 客户端哨兵（404=未知/失效触发口令回退，

@@ -9,6 +9,7 @@ require (
 	github.com/klauspost/compress v1.20.1
 	github.com/oekit/concurrency v0.22.0
 	github.com/oekit/core v0.12.0
+	github.com/oekit/pkg v0.28.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/quic-go/quic-go v0.63.0
 	github.com/schollz/pake/v3 v3.2.0
@@ -25,7 +26,6 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/oekit/pkg v0.28.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.3.1 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
