@@ -9,7 +9,7 @@ require (
 	github.com/klauspost/compress v1.20.3
 	github.com/oekit/concurrency v0.22.0
 	github.com/oekit/core v0.12.0
-	github.com/oekit/network v0.7.0
+	github.com/oekit/network v0.7.1
 	github.com/oekit/pkg v0.28.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/quic-go/quic-go v0.63.0
