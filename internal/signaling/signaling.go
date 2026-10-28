@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/oekit/concurrency/async"
+	"github.com/oekit/network/wsutil"
 
 	"github.com/pigeonbox/p2p/internal/registry"
 )
@@ -89,11 +90,14 @@ func NewHub(ctx context.Context, cfg Config, reg *registry.Service, m Metrics) *
 // ---- 会话与对等端 ----
 
 type peer struct {
-	nodeID    string
-	conn      *websocket.Conn
-	send      chan []byte // 出站 JSON 帧（writePump 消费）
-	done      chan struct{}
-	closeOnce sync.Once
+	nodeID string
+	conn   *websocket.Conn
+	// outbox 是这条连接唯一的帧写出口：websocket 实现不许并发写，所以帧
+	// 必须先进有界队列，由它独家取走。它同时管「慢消费者」——队列满了
+	// Send 只报告不处置，处置由本包按场景决定。
+	outbox *wsutil.Outbox
+	// writeWait 是单次写/单次控制帧的超时。
+	writeWait time.Duration
 }
 
 type session struct {
@@ -288,15 +292,17 @@ func enqueue(p *peer, f serverFrame) {
 	if !ok {
 		return
 	}
-	select {
-	case p.send <- b:
-	default:
+	if !p.outbox.Send(b) {
 		closePeer(p) // 慢消费者：直接断开，不阻塞任何路径
 	}
 }
 
+// closePeer 关掉这条连接。
+//
+// 它只让出站管道收工：管道会把队列里剩下的帧冲刷完，然后由 handler 里那条
+// 关闭序列去握手并关连接。顺序不能反——冲刷要在连接还活着时做。
 func closePeer(p *peer) {
-	p.closeOnce.Do(func() { close(p.done) })
+	p.outbox.Close()
 }
 
 // ---- 小件 ----

@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/oekit/concurrency/async"
+	"github.com/oekit/network/wsutil"
 	"github.com/pigeonbox/p2p/internal/registry"
 )
 
@@ -77,6 +78,12 @@ func marshalFrame(f serverFrame) ([]byte, bool) {
 // 原生客户端（Go ws 库不发 Origin 头），浏览器不是 M3 直传对等端——携带
 // Origin 的一律拒绝，防恶意网页驱使访问者浏览器连信令耗资源/刷限流配额。
 // 真正的准入仍由 hello 帧节点签名把守。
+// outboxQueueSize 是每条连接的出站队列长度。
+//
+// 32 帧够应付信令的突发(配对、转发、错误帧常连着来),又不至于让一个读得慢
+// 的对端占住太多内存。
+const outboxQueueSize = 32
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
@@ -128,10 +135,22 @@ func (h *Hub) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := &peer{nodeID: hf.NodeID, conn: conn, send: make(chan []byte, 32), done: make(chan struct{})}
+	p := &peer{nodeID: hf.NodeID, conn: conn, writeWait: h.cfg.WriteWait}
+	// 出站管道在 peer 进入会话**之前**就建好。
+	//
+	// 顺序很重要：peer 一旦进了 session，janitor 与 broadcast 就可能从别的
+	// goroutine 调 enqueue 读它的 outbox —— 那时若字段还没赋值，就是一个数据
+	// 竞态（-race 会抓到）。这里建好再 join，join 内部的锁又提供了
+	// happens-before，其他 goroutine 看到的 p 一定是完整的。
+	//
+	// join 失败的那条路要显式收工（closePeer），否则写协程会漏着。
+	p.outbox = wsutil.NewOutbox(p.writeFrame, wsutil.OutboxOptions{QueueSize: outboxQueueSize})
+	async.GoSafe(func() { p.closeSequence() })
+
 	outcome, sess, jerr := h.join(hash, p)
 	if jerr != nil {
 		h.metrics.SignalingJoin("busy")
+		closePeer(p)
 		deny(conn, closeBusy, jerr.Error())
 		return
 	}
@@ -152,9 +171,13 @@ func (h *Hub) handle(w http.ResponseWriter, r *http.Request) {
 	// 读写路径+信令逻辑),p2pd 是多租户注册中心——泵 panic 带崩进程=注册
 	// 中心全体用户断服,同 relay 数据面判例:panic 只许死连接不许死进程
 	// (GoSafe 收编,panic 经 async.SetPanicHandler 落 p2pd 结构化日志)。
-	// readPump 自有 defer leave/writePump 自有 defer Close 在 panic 展开
-	// 时仍先于 GoSafe 外层 recover 执行,连接清理语义不变。
-	async.GoSafe(func() { h.writePump(p) })
+	// readPump 自有 defer leave;出站写协程在 wsutil.Outbox 里(同样 GoSafe
+	// 收编),它的 defer Close 在 panic 展开时仍先于 GoSafe 外层 recover 执行。
+	//
+	// 这里起的是 ping 泵与关闭序列:帧的写出归 wsutil.Outbox(唯一写者),
+	// ping 走 WriteControl——gorilla 明确允许它与 WriteMessage 并发调用,
+	// 所以它不必与帧写出争那把「唯一写者」的锁。
+	async.GoSafe(func() { h.pingPump(p) })
 	async.GoSafe(func() { h.readPump(sess, p) })
 }
 
@@ -198,46 +221,51 @@ func (h *Hub) readPump(sess *session, p *peer) {
 		if !ok {
 			return
 		}
-		select {
-		case other.send <- envelope:
-		default:
-			return // 对端慢消费，本端退出触发 leave 清理
+		// 对端慢消费 ⇒ 本端退出触发 leave 清理（**不是**断开对端：这里
+		// 与 enqueue 的处置不同,处置由调用方按返回值决定)。
+		if !other.outbox.Send(envelope) {
+			return
 		}
 	}
 }
 
-// writePump 出站泵：send 队列 + 周期 ping；done 后冲刷剩余帧再握手关闭。
-func (h *Hub) writePump(p *peer) {
+// writeFrame 是这条连接唯一的帧写出口。
+//
+// websocket 实现不许并发写(两个写者同时写同一条连接会互相踩帧,而服务端
+// 不报任何错),所以帧只能由出站管道的写协程独家写出。
+func (p *peer) writeFrame(msg []byte) error {
+	_ = p.conn.SetWriteDeadline(time.Now().Add(p.writeWait))
+	return p.conn.WriteMessage(websocket.TextMessage, msg)
+}
+
+// pingPump 周期 ping,保住空闲连接。
+//
+// ping 走 WriteControl, gorilla 明确允许它与 WriteMessage 并发调用, 所以它
+// 不必与帧写出争那把「唯一写者」的锁。
+func (h *Hub) pingPump(p *peer) {
 	ticker := time.NewTicker(h.cfg.PingPeriod)
 	defer ticker.Stop()
-	defer func() { _ = p.conn.Close() }()
-
-	write := func(msg []byte) bool {
-		_ = p.conn.SetWriteDeadline(time.Now().Add(h.cfg.WriteWait))
-		return p.conn.WriteMessage(websocket.TextMessage, msg) == nil
-	}
 	for {
 		select {
-		case msg := <-p.send:
-			if !write(msg) {
-				return
-			}
-		case <-p.done:
-			for {
-				select {
-				case msg := <-p.send:
-					if !write(msg) {
-						return
-					}
-				default:
-					_ = p.conn.WriteControl(websocket.CloseMessage,
-						websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-						time.Now().Add(h.cfg.WriteWait))
-					return
-				}
-			}
+		case <-p.outbox.Done():
+			return
 		case <-ticker.C:
 			_ = p.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(h.cfg.WriteWait))
 		}
 	}
+}
+
+// closeSequence 是这条连接的关闭序列。
+//
+// 出站管道结束(被 closePeer 关闭,或写失败)⇒ 队列里剩下的帧冲刷完 ⇒
+// 发关闭握手 ⇒ 关连接。顺序不能反:冲刷与握手都要求连接还活着。
+//
+// 写失败时连接已经坏了,握手会失败(忽略即可)——但连接照样得关。
+func (p *peer) closeSequence() {
+	<-p.outbox.Done()
+	p.outbox.Wait()
+	_ = p.conn.WriteControl(websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+		time.Now().Add(p.writeWait))
+	_ = p.conn.Close()
 }
