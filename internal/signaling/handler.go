@@ -72,18 +72,18 @@ func marshalFrame(f serverFrame) ([]byte, bool) {
 	return b, true
 }
 
-// ---- WS 升级与准入 ----
-
-// 升级器拒绝浏览器 Origin（2026-10-05 审计 P3）：对等端为桌面/CLI/服务器
-// 原生客户端（Go ws 库不发 Origin 头），浏览器不是 M3 直传对等端——携带
-// Origin 的一律拒绝，防恶意网页驱使访问者浏览器连信令耗资源/刷限流配额。
-// 真正的准入仍由 hello 帧节点签名把守。
 // outboxQueueSize 是每条连接的出站队列长度。
 //
 // 32 帧够应付信令的突发(配对、转发、错误帧常连着来),又不至于让一个读得慢
 // 的对端占住太多内存。
 const outboxQueueSize = 32
 
+// ---- WS 升级与准入 ----
+
+// 升级器拒绝浏览器 Origin（2026-10-05 审计 P3）：对等端为桌面/CLI/服务器
+// 原生客户端（Go ws 库不发 Origin 头），浏览器不是 M3 直传对等端——携带
+// Origin 的一律拒绝，防恶意网页驱使访问者浏览器连信令耗资源/刷限流配额。
+// 真正的准入仍由 hello 帧节点签名把守。
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
@@ -145,13 +145,20 @@ func (h *Hub) handle(w http.ResponseWriter, r *http.Request) {
 	//
 	// join 失败的那条路要显式收工（closePeer），否则写协程会漏着。
 	p.outbox = wsutil.NewOutbox(p.writeFrame, wsutil.OutboxOptions{QueueSize: outboxQueueSize})
-	async.GoSafe(func() { p.closeSequence() })
+	async.GoSafeLabeled("signaling-close", func() { p.closeSequence() })
 
 	outcome, sess, jerr := h.join(hash, p)
 	if jerr != nil {
 		h.metrics.SignalingJoin("busy")
-		closePeer(p)
+		// 顺序要紧：**先写协议要求的关闭码，再收工出站管道**。
+		//
+		// closePeer 会唤醒关闭序列，它也会往这条连接写一个 CloseNormalClosure
+		// (1000) 并关连接 —— 与 deny 写的 4002 抢同一条连接。客户端取先到的
+		// 那个帧，丢掉 4002 就是协议回归（handler.go 顶部的关闭码契约写着
+		// 「4002 信道占用或超配额」）。deny 不需要等任何调度就能写完帧，
+		// 关闭序列要两次唤醒，所以让 deny 先走。
 		deny(conn, closeBusy, jerr.Error())
+		closePeer(p)
 		return
 	}
 
@@ -177,8 +184,8 @@ func (h *Hub) handle(w http.ResponseWriter, r *http.Request) {
 	// 这里起的是 ping 泵与关闭序列:帧的写出归 wsutil.Outbox(唯一写者),
 	// ping 走 WriteControl——gorilla 明确允许它与 WriteMessage 并发调用,
 	// 所以它不必与帧写出争那把「唯一写者」的锁。
-	async.GoSafe(func() { h.pingPump(p) })
-	async.GoSafe(func() { h.readPump(sess, p) })
+	async.GoSafeLabeled("signaling-ping", func() { h.pingPump(p) })
+	async.GoSafeLabeled("signaling-read", func() { h.readPump(sess, p) })
 }
 
 func deny(conn *websocket.Conn, code int, msg string) {
