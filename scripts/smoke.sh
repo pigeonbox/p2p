@@ -14,6 +14,7 @@ cleanup() {
   wait 2>/dev/null || true
 }
 OK=0
+# shellcheck disable=SC2154  # rc 在 trap 体内赋值，shellcheck 看不见
 trap 'rc=$?; cleanup; if [ "$rc" -ne 0 ]; then exit $rc; fi; if [ "${OK:-0}" != 1 ]; then exit 1; fi; exit 0' EXIT
 
 echo "── 构建 p2pd"
