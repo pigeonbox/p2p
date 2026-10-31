@@ -13,7 +13,8 @@ cleanup() {
   [ -n "$PID" ] && kill "$PID" 2>/dev/null || true
   wait 2>/dev/null || true
 }
-trap cleanup EXIT
+OK=0
+trap 'rc=$?; cleanup; if [ "$rc" -ne 0 ]; then exit $rc; fi; if [ "${OK:-0}" != 1 ]; then exit 1; fi; exit 0' EXIT
 
 echo "── 构建 p2pd"
 make build -s
@@ -49,3 +50,4 @@ curl -sf "${BASE}/metrics" | grep -q 'p2p_nodes_active' && echo "  ✓ metrics �
 
 echo
 echo "✓ smoke OK"
+OK=1
