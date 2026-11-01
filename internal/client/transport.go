@@ -41,18 +41,33 @@ type xport struct {
 	accept func(ctx context.Context, seg int) (*wire.Conn, error)
 	// direct 是否 QUIC 直传(多流可用)。
 	direct bool
-	// peerClosed 对端关闭连接的信号(QUIC 接收侧接入)。QUIC Transport.Close
-	// 不保证在途数据交付——接收方发完 final 帧若立刻拆传输,末帧可能在送达
-	// 前被丢(CI 高载实测:发送方 final 接收 60s idle 超时)。finish() 据此
-	// 等对端先关,再拆本端。
+	// peerClosed 对端关闭连接的信号(QUIC 两侧都接)。
+	//
+	// 为什么两侧都要(2026-10-28 实录修正)：QUIC 的 Transport.Close **不保证
+	// 在途数据交付**——只关 socket 的话对端收不到 CONNECTION_CLOSE，感知不到
+	// 「对端已拆」⇒ 发送侧拆得太早 ⇒ 末帧(final)在途丢失 ⇒ 对端
+	// 「final 接收: timeout: no recent network activity」(CI 高载实测)。
+	// ⇒ 拆传输时走 qc.CloseWithError(0) 发 CONNECTION_CLOSE(优雅关闭)，
+	// 对端的 qc.Context() 立即 Done ⇒ 两侧都能感知。
 	peerClosed <-chan struct{}
 	cleanup    func()
 }
 
-// finish 收尾:接收侧先等对端关闭(上限 2s,防对端异常时悬挂)以确保末帧
-// 送达,再拆本端传输;发送侧对端无需再收任何帧,直接拆。
+// finish 收尾：**发送侧**等对端关闭(上限 2s)，接收侧直接拆。
+//
+// 等待方向跟着 v4 协议走(2026-10-28 实录修正)：v4 里 **final 由发送方发**
+// (sendAll 末尾写 MsgFinal、recvAll 末尾读 MsgFinal —— wire.go 的帧注释
+// 至今仍写着「接收方→发送方」，那是旧协议形态的遗留)。
+//
+//	· 发送侧：发完 final ⇒ 必须等对端**读完并拆**才能拆本端，否则末帧在途
+//	  丢失 ⇒ 对端等 final 超时(60s)。
+//	· 接收侧：读到 final 即证明末帧已落到对端 ⇒ 直接拆。
+//
+// ⚠️ 旧实现是「接收侧等、发送侧不等」——旧协议形态(final 由接收方发)留下的，
+// 协议演进后没跟着改 ⇒ 同一根因反复复发三轮。
+// ⚠️ 两侧都等会**互等**(发送侧等接收侧关、接收侧等发送侧关)⇒ 白等 2s/次。
 func (x *xport) finish(isSender bool) {
-	if !isSender && x.peerClosed != nil {
+	if isSender && x.peerClosed != nil {
 		select {
 		case <-x.peerClosed:
 		case <-time.After(2 * time.Second):
@@ -202,11 +217,15 @@ func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate
 		_ = tr.Close()
 		return nil, err
 	}
-	x := &xport{ctrl: ctrl, direct: true, cleanup: func() { _ = tr.Close() }}
-	if !isSender {
-		// 接收侧挂对端关闭信号:final 帧送达后再拆传输(见 xport.peerClosed)
-		x.peerClosed = qc.Context().Done()
-	}
+	x := &xport{ctrl: ctrl, direct: true, cleanup: func() {
+		// 优雅关闭：先发 CONNECTION_CLOSE(让对端感知「对端已拆」)，再关 socket。
+		// 只 tr.Close() 的话对端收不到 close 帧，感知不到 ⇒ 发送侧会以为
+		// 对端还在等，末帧投递窗口被拖到 idle 超时。
+		_ = qc.CloseWithError(0, "")
+		_ = tr.Close()
+	}}
+	// 两侧都挂对端关闭信号(见 xport.peerClosed 的说明)。
+	x.peerClosed = qc.Context().Done()
 	if isSender {
 		x.open = func(ctx context.Context, seg int) (*wire.Conn, error) {
 			st, err := qc.OpenStreamSync(ctx)
