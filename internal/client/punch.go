@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/oekit/concurrency/async"
 	"net"
 	"strings"
 	"sync"
@@ -148,7 +149,7 @@ func punchDual(sock4, sock6 *net.UDPConn, peer *candInfo, k [32]byte, budget tim
 			return
 		}
 		wg.Add(1)
-		go func() {
+		async.GoSafeLabeled("punch-candidate", func() {
 			defer wg.Done()
 			p := *peer
 			p.UDPPublic = ""
@@ -167,12 +168,12 @@ func punchDual(sock4, sock6 *net.UDPConn, peer *candInfo, k [32]byte, budget tim
 			if err == nil {
 				resCh <- res{v6: v6, addr: addr}
 			}
-		}()
+		})
 	}
 	run(false, sock4, nil)
 	run(true, sock6, nil)
 	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
+	async.GoSafeLabeled("punch-wait-close", func() { wg.Wait(); close(done) })
 	select {
 	case r := <-resCh:
 		// 胜出即刻返回;另一族由调用方关闭套接字终止
@@ -224,7 +225,7 @@ func punch(sock *net.UDPConn, peer *candInfo, k [32]byte, budget time.Duration) 
 	stop := make(chan struct{})
 	var sendWG sync.WaitGroup
 	sendWG.Add(1)
-	go func() { // 探针发送循环(对每个候选,周期性同时开洞)
+	async.GoSafeLabeled("punch-probe-loop", func() { // 探针发送循环(对每个候选,周期性同时开洞)
 		defer sendWG.Done()
 		t := time.NewTicker(80 * time.Millisecond)
 		defer t.Stop()
@@ -242,7 +243,7 @@ func punch(sock *net.UDPConn, peer *candInfo, k [32]byte, budget time.Duration) 
 				}
 			}
 		}
-	}()
+	})
 	defer func() { close(stop); sendWG.Wait() }()
 
 	_ = sock.SetReadDeadline(time.Now().Add(budget))

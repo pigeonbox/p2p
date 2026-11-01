@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/oekit/concurrency/async"
 	"io"
 	"net"
 	"net/http"
@@ -640,11 +641,11 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
-	go func() {
+	async.GoSafeLabeled("p2pcweb-tmp-cleanup", func() {
 		// 过期后清理临时目录(shares 表过期惰性清扫;临时目录按 TTL+1min 兜底)
 		time.Sleep(shareTTL + time.Minute)
 		_ = os.RemoveAll(tmpDir)
-	}()
+	})
 	writeJSON(w, http.StatusOK, map[string]string{
 		"id": sh.id, "url": "/d/" + sh.id + "?t=" + sh.token,
 		"name": name, "expires": sh.expires.Format(time.RFC3339),
