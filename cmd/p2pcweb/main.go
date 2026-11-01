@@ -129,17 +129,17 @@ func runServer(o *options) error {
 	logf("PigeonBeam 信鸽直传·网页模式 %s\n  界面:     %s\n  接收目录: %s\n  退出:     Ctrl+C（或关闭终端）",
 		version.Version, url, s.outDir)
 	if !o.noOpen {
-		go openBrowser(url)
+		async.GoSafeLabeled("p2pcweb-open-browser", func() { openBrowser(url) })
 	}
 
 	httpSrv := &http.Server{Handler: s.routes(), ReadHeaderTimeout: 10 * time.Second}
-	go func() {
+	async.GoSafeLabeled("p2pcweb-signal-watch", func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 		<-sig
 		s.mgr.Cancel()
 		_ = httpSrv.Close()
-	}()
+	})
 	if err := httpSrv.Serve(lw); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
