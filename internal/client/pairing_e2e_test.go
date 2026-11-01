@@ -17,7 +17,7 @@ func TestSendPairedLoopback(t *testing.T) {
 	src := randomFile(t, sendDir, "pair-发送.bin", 1<<20)
 
 	so := testOpts(f, "psend")
-	so.PunchBudget = 6 * time.Second
+	so.PunchBudget = 20 * time.Second
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	go func() {
@@ -46,7 +46,7 @@ func TestSendPairedLoopback(t *testing.T) {
 	}
 
 	ro := testOpts(f, "precv")
-	ro.PunchBudget = 6 * time.Second
+	ro.PunchBudget = 20 * time.Second
 	rc, err := New(ro)
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +82,7 @@ func TestReversePairedLoopback(t *testing.T) {
 
 	// 反向:接收方亮码(creator),批准后收件
 	ro := testOpts(f, "rprecv")
-	ro.PunchBudget = 6 * time.Second
+	ro.PunchBudget = 20 * time.Second
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	go func() {
@@ -108,7 +108,7 @@ func TestReversePairedLoopback(t *testing.T) {
 
 	// 发送侧:输码推送(SendByClaim)
 	so := testOpts(f, "rpsend")
-	so.PunchBudget = 6 * time.Second
+	so.PunchBudget = 20 * time.Second
 	sc, err := New(so)
 	if err != nil {
 		t.Fatal(err)

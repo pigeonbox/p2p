@@ -71,7 +71,7 @@ func Serve(ctx context.Context, ln net.Listener, p Params) error {
 		log:            p.Log,
 	}
 	// 等待超时清扫
-	go func() {
+	async.GoSafeLabeled("relay-housekeeping", func() {
 		t := time.NewTicker(10 * time.Second)
 		defer t.Stop()
 		for {
@@ -90,11 +90,11 @@ func Serve(ctx context.Context, ln net.Listener, p Params) error {
 				s.mu.Unlock()
 			}
 		}
-	}()
-	go func() {
+	})
+	async.GoSafeLabeled("relay-listener-close", func() {
 		<-ctx.Done()
 		_ = ln.Close()
-	}()
+	})
 	for {
 		conn, err := ln.Accept()
 		if err != nil {

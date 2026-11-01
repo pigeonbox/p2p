@@ -1,0 +1,19 @@
+# gitleaks 配置（CI Security Scan 与本地 `gitleaks detect` 自动读取）。
+# 默认规则全量继承，仅豁免已核实误报——豁免必须写明理由，禁止无说明扩条。
+[extend]
+useDefault = true
+
+# p2pcweb 子进程传令牌的测试夹具（2026-10-26 审计 P1 的回归测试）。
+#
+# 为什么需要：本次修复把直传口令从**子进程 argv** 挪到环境变量（argv 会进
+# /proc/<pid>/cmdline ⇒ 同机任意低权账号可读），测试里用了一个固定的假口令
+# 字面量 ⇒ `generic-api-key` 规则按「像密钥的高熵串」判定 ⇒ Secret Scan 报
+# "leaks found: 1" ⇒ p2p 的 CI 红（实测）。
+#
+# 为什么用**值正则**而不是文件路径：路径豁免会放过该文件里的**任何**密钥
+# （包括未来误粘贴的真凭据）⇒ 值正则只豁免这一个**确认是测试夹具**的字面量。
+[[allowlists]]
+description = "p2pcweb 传令牌的测试夹具口令（非真实凭据）"
+regexes = [
+  '''ABCD-1234-WXYZ''',
+]
