@@ -56,18 +56,69 @@ func open(key [32]byte, data []byte) ([]byte, error) {
 	return aead.Open(nil, nonce, ct, nil)
 }
 
+// 反射查询的重试参数。
+//
+// 预算刻意压得比「一次 1s」短：反射是**本机到 registry 的 UDP 往返**，正常
+// 是亚毫秒级；拉长单次预算只会让失败时的等待更长。
+const (
+	reflectAttempts    = 3
+	reflectQueryBudget = 600 * time.Millisecond
+	reflectRetryDelay  = 150 * time.Millisecond
+)
+
 // reflectOwn 向 registry 同端口的 UDP 反射器查询本套接字的公网映射地址。
-func reflectOwn(sock *net.UDPConn, registryBase string) *net.UDPAddr {
-	addr, err := reflect.Query(sock, hostOf(registryBase), time.Second)
-	if err != nil {
-		return nil // 反射失败不致命:退化为仅 LAN 候选+中继
+//
+// ⚠️ 必须**重试**（p2p#20，2026-11-03 实测）：反射器按源 IP 限流
+// （令牌桶 10/s、突发 20）且**超限静默丢包**——不回任何响应 ⇒ 同一出口 IP 的
+// 多个客户端（家庭/公司 NAT、并行测试）并发查询时，突发额度用尽后的查询
+// 必然收不到回应 ⇒ 反射失败 ⇒ UDPPublic 为空 ⇒ 打洞**没有可达目标**
+// （LAN 候选按设计不含 loopback）⇒ 直连必然失败，表现为
+// 「打洞失败(v4/v6 均未通,对端不可直连)」。
+//
+// 实测：同 IP 连打 30 次反射查询 ⇒ 前 20 次全过、**第 21 次起开始失败**
+// —— 正好是令牌桶的 burst ⇒ 与限流丢包完全吻合。
+//
+// ⇒ 失败要重试（桶按 10/s 回落，短退避即可命中）；且失败**必须留日志**
+// （原实现完全静默降级 ⇒ 「直连不可用」变成查不到原因的黑洞）。
+func reflectOwn(sock *net.UDPConn, registryBase string) (*net.UDPAddr, error) {
+	addr := hostOf(registryBase)
+	var lastErr error
+	for attempt := 1; attempt <= reflectAttempts; attempt++ {
+		pub, err := reflect.Query(sock, addr, reflectQueryBudget)
+		if err == nil {
+			return pub, nil
+		}
+		lastErr = err
+		if attempt < reflectAttempts {
+			time.Sleep(reflectRetryDelay)
+		}
 	}
-	return addr
+	return nil, lastErr
+}
+
+// localPortOf 取套接字本地端口；套接字为空或类型不符时返回 0。
+//
+// ⚠️ 不能写 sock.LocalAddr().(*net.UDPAddr).Port：
+// 无 IPv6 环境时 punchSockets 会把 sock6 置 nil（ListenUDP("udp6") 失败，
+// 纯 v4 走通），而 LocalAddr() 在 nil 接收者上返回 nil ⇒ 裸类型断言 panic
+// ⇒ **没有 IPv6 的机器（NAS/容器常见）上一建会话就崩**。
+// 同理 v4 监听失败时 sock4 也是 nil。
+func localPortOf(sock *net.UDPConn) int {
+	if sock == nil {
+		return 0
+	}
+	if a, ok := sock.LocalAddr().(*net.UDPAddr); ok && a != nil {
+		return a.Port
+	}
+	return 0
 }
 
 // lanCandidates6 枚举本机全局 IPv6 地址与套接字端口组合。
 func lanCandidates6(sock *net.UDPConn) []string {
-	port := sock.LocalAddr().(*net.UDPAddr).Port
+	port := localPortOf(sock)
+	if port == 0 {
+		return nil // 无 v6 环境 ⇒ 无候选（不是 panic）
+	}
 	var out []string
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -99,7 +150,10 @@ func lanCandidates6(sock *net.UDPConn) []string {
 
 // lanCandidates 枚举本机 IPv4 地址与套接字端口的组合。
 func lanCandidates(sock *net.UDPConn) []string {
-	port := sock.LocalAddr().(*net.UDPAddr).Port
+	port := localPortOf(sock)
+	if port == 0 {
+		return nil
+	}
 	var out []string
 	ifaces, err := net.Interfaces()
 	if err != nil {
