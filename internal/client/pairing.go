@@ -167,12 +167,18 @@ func (r *registryAPI) pairRequests(ctx context.Context, n *nodeIdentity) ([]pair
 // （404/409 → ErrPairUnknown/ErrPairBusy 两个不同哨兵）⇒ DoJSON 不适用。
 // DoRaw：任何状态码都返回 err=nil + 原始 status/body，由调用方自行判定；
 // 读体上限 8KB（防异常服务端刷屏放大内存）。
+//
+// oekit/pkg v0.31 起 DoRaw 返回 RawResponse{StatusCode, Body, Truncated}，
+// 此处解包回 (status, body, err) 三元组，调用点不变。截断报文**追加可见
+// 标记**（上游语义：截断必须可观测，不得把半截报文当完整报文用）：成功
+// 路径半截 JSON 不可能再被误 unmarshal，错误路径 pairHTTPError 的诊断
+// 文案也能看出报文不完整。
 func (r *registryAPI) doRaw(ctx context.Context, method, path string, body any) (int, []byte, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return 0, nil, err
 	}
-	return httpjson.DoRaw(ctx, r.http, httpjson.Request{
+	res, err := httpjson.DoRaw(ctx, r.http, httpjson.Request{
 		Method: method,
 		URL:    r.base + path,
 		Body:   payload,
@@ -180,6 +186,13 @@ func (r *registryAPI) doRaw(ctx context.Context, method, path string, body any) 
 			h.Set("Content-Type", "application/json")
 		},
 	}, 8<<10)
+	if err != nil {
+		return 0, nil, err
+	}
+	if res.Truncated {
+		res.Body = append(res.Body, []byte("…[响应体超 8KB 上限被截断]")...)
+	}
+	return res.StatusCode, res.Body, nil
 }
 
 // pairHTTPError 服务端错误码 → 客户端哨兵（404=未知/失效触发口令回退，
