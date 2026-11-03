@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oekit/concurrency/loop"
 	"github.com/oekit/core/version"
 	"github.com/pigeonbox/p2p/internal/registry"
 )
@@ -173,6 +174,12 @@ type MailboxOptions struct {
 // 逐条以名录 box_pub 开箱验真 → Emit。发端不在名录/开箱失败/密文与
 // 封套身份不符一律跳过(stderr 记因,绝不冒进收件)。
 // Watch 时按 Interval 长驻轮询,每轮心跳续租;一次性模式弹出即返回。
+//
+// 收编 oekit/concurrency/loop.Run(2026-11-03):轮询主体由 loop 接管
+// (Interval 轮距、async.GoSafeLabeled 执行 ⇒ 轮内 panic 经全局 handler
+// 上报而不再炸穿进程——与仓内「panic 收编不静默」惯例一致,行为差异仅在
+// panic 路径);一次性/MaxCycles 退出用 cancel 收口:fn 首轮即跑
+// (FirstDelay 缺省=立即),计满轮数即 cancel,Wait 排空后返回。
 func RunMailbox(opt MailboxOptions, emit InviteSink) error {
 	if opt.Registry == "" {
 		return fmt.Errorf("registry 地址必填")
@@ -197,25 +204,30 @@ func RunMailbox(opt MailboxOptions, emit InviteSink) error {
 	}
 	reg := newRegistryAPI(opt.Registry)
 
-	for cycle := 0; ; cycle++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var cycle int
+	l := loop.Run(runCtx, loop.Config{Interval: opt.Interval, Name: "invite-mailbox"}, func(ctx context.Context) {
+		cycle++
+		cctx, ccancel := context.WithTimeout(ctx, 10*time.Second)
+		defer ccancel()
 		// 注册/心跳保活(幂等 upsert;discoverable 时同时刷新名录状态)
-		if err := reg.registerPresence(ctx, id, name, mailboxLease, opt.Discoverable); err != nil {
+		if err := reg.registerPresence(cctx, id, name, mailboxLease, opt.Discoverable); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠ 节点注册失败(下轮重试): %v\n", err)
 		}
-		entries, err := reg.mailboxPop(ctx, id.id)
+		entries, err := reg.mailboxPop(cctx, id.id)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠ 信箱取件失败(下轮重试): %v\n", err)
 		}
-		cancel()
 		if err == nil && len(entries) > 0 {
 			emitSealedEntries(reg, id, boxPriv, entries, emit)
 		}
-		if !opt.Watch || (opt.MaxCycles > 0 && cycle+1 >= opt.MaxCycles) {
-			return nil
+		if !opt.Watch || (opt.MaxCycles > 0 && cycle >= opt.MaxCycles) {
+			cancel()
 		}
-		time.Sleep(opt.Interval)
-	}
+	})
+	l.Wait()
+	return nil
 }
 
 // emitSealedEntries 开箱验真并出口(名录 box_pub 为信任锚)。

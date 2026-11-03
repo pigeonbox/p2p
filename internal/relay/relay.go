@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/oekit/concurrency/async"
+	"github.com/oekit/concurrency/loop"
 	"golang.org/x/time/rate"
 )
 
@@ -70,26 +71,19 @@ func Serve(ctx context.Context, ln net.Listener, p Params) error {
 		waitingTimeout: p.WaitingTimeout,
 		log:            p.Log,
 	}
-	// 等待超时清扫
-	async.GoSafeLabeled("relay-housekeeping", func() {
-		t := time.NewTicker(10 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				s.mu.Lock()
-				for tok, c := range s.waiting {
-					if time.Since(s.since[tok]) > s.waitingTimeout {
-						_ = c.Close()
-						delete(s.waiting, tok)
-						delete(s.since, tok)
-					}
-				}
-				s.mu.Unlock()
+	// 等待超时清扫（收编 oekit/concurrency/loop.Run 2026-11-03：周期任务+
+	// ctx 停机+逐轮 panic 收编恰是 loop 的形状，ticker/select 手搓壳退役；
+	// loop 内部每轮 async.RunSafeLabeled，与原 GoSafeLabeled 同级防护）
+	loop.Run(ctx, loop.Config{Interval: 10 * time.Second, Name: "relay-housekeeping"}, func(context.Context) {
+		s.mu.Lock()
+		for tok, c := range s.waiting {
+			if time.Since(s.since[tok]) > s.waitingTimeout {
+				_ = c.Close()
+				delete(s.waiting, tok)
+				delete(s.since, tok)
 			}
 		}
+		s.mu.Unlock()
 	})
 	async.GoSafeLabeled("relay-listener-close", func() {
 		<-ctx.Done()

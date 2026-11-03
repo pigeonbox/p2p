@@ -20,6 +20,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/oekit/concurrency/async"
+	"github.com/oekit/concurrency/retry"
 	"github.com/pigeonbox/p2p/internal/wire"
 )
 
@@ -452,22 +453,28 @@ const swapCarrierWaitBudget = 5 * time.Second
 //
 // 返回与 old **不同**的那条承载；若在预算内没等到 ⇒ 返回明确错误
 // （而不是让调用方拿着旧承载去读、再等 60s 超时得到一条无关的错误信息）。
+//
+// 收编 oekit/concurrency/retry.Poll(2026-11-02)：2ms 定间隔 + swapCarrierWaitBudget
+// 墙钟上限，与原手搓循环形状逐位对应（cond 先行、先查条件后查超时）。cond 不回错、
+// ctx 不取消 ⇒ Poll 只可能回 nil/ErrTimeout，超时映射回原专用错误文案（逐字不变）。
 func awaitSwappedCarrier(getX srcGetter, old *xport) (*xport, error) {
 	if getX == nil {
 		return nil, errors.New("swap 后等待新承载: 取源函数为空")
 	}
 	const step = 2 * time.Millisecond
-	deadline := time.Now().Add(swapCarrierWaitBudget)
-	for {
+	var fresh *xport
+	err := retry.Poll(context.Background(), step, swapCarrierWaitBudget, func() (bool, error) {
 		cur := getX()
 		if cur != nil && cur != old {
-			return cur, nil
+			fresh = cur
+			return true, nil
 		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("swap 后等待新承载就位超时(%.0fs):发送侧已换源,本侧直连承载未就位(升级协程未 store)——双方读写不同流", swapCarrierWaitBudget.Seconds())
-		}
-		time.Sleep(step)
+		return false, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("swap 后等待新承载就位超时(%.0fs):发送侧已换源,本侧直连承载未就位(升级协程未 store)——双方读写不同流", swapCarrierWaitBudget.Seconds())
 	}
+	return fresh, nil
 }
 
 // recvAll v4 接收主流程。choose 非 nil 时由调用方决定接受哪些文件(部分接受)。

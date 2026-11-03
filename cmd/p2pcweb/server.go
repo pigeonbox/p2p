@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/oekit/concurrency/async"
 	"io"
 	"net"
 	"net/http"
@@ -24,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oekit/concurrency/timewheel"
 	"github.com/oekit/core/version"
 	"github.com/pigeonbox/p2p/internal/client"
 )
@@ -66,6 +66,21 @@ const (
 	shareTTL       = 15 * time.Minute
 	shareMaxActive = 4
 )
+
+// tmpCleanupWheel 临时目录延迟清理时间轮（进程级单例）。
+//
+// 收编 oekit/concurrency/timewheel（2026-11-03）：原形态是「每上传一次派一个
+// goroutine Sleep(shareTTL+1min) 后 RemoveAll」⇒ 长睡眠 goroutine 随上传数线性
+// 堆积（TTL 窗口内每上传一个就攒一个）；时间轮=O(1) 后台事件循环 + 一次性条目
+// 到期自动出表（advance 内 delete(tw.timers,key)，无键泄漏）。等价性核对：
+//   - panic 防护不变：timewheel 到期触发走 async.RunSafe 包任务，与原
+//     GoSafeLabeled 同级（panic 不炸轮，任务标签聚合口径略异）；
+//   - key 取 tmpDir（os.MkdirTemp 产物，唯一）⇒ 无同键顶替/误删他分享；
+//   - 1s×360 格=单轮 6min，16min 延迟由圈数表达（circle 字段），精度 ±1s
+//     对「TTL+1min 兜底清扫」无感；
+//   - 不注册 Close：与原孤儿 goroutine 同语义——进程退出即弃，未触发的清理
+//     留给 OS 临时目录回收（wheel Close 后未触发任务丢弃，语义一致）。
+var tmpCleanupWheel = timewheel.NewTimingWheel(time.Second, 360)
 
 func newShareTable() *shareTable { return &shareTable{items: map[string]*share{}} }
 
@@ -641,11 +656,8 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
-	async.GoSafeLabeled("p2pcweb-tmp-cleanup", func() {
-		// 过期后清理临时目录(shares 表过期惰性清扫;临时目录按 TTL+1min 兜底)
-		time.Sleep(shareTTL + time.Minute)
-		_ = os.RemoveAll(tmpDir)
-	})
+	// 过期后清理临时目录(shares 表过期惰性清扫;临时目录按 TTL+1min 兜底)
+	tmpCleanupWheel.SetTimer(tmpDir, func() { _ = os.RemoveAll(tmpDir) }, shareTTL+time.Minute)
 	writeJSON(w, http.StatusOK, map[string]string{
 		"id": sh.id, "url": "/d/" + sh.id + "?t=" + sh.token,
 		"name": name, "expires": sh.expires.Format(time.RFC3339),

@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/oekit/concurrency/async"
+	"github.com/oekit/concurrency/loop"
 	"github.com/oekit/network/wsutil"
 
 	"github.com/pigeonbox/p2p/internal/registry"
@@ -83,7 +83,7 @@ func NewHub(ctx context.Context, cfg Config, reg *registry.Service, m Metrics) *
 		now:      time.Now,
 		sessions: make(map[string]*session),
 	}
-	async.GoSafeLabeled("signaling-janitor", func() { h.janitor(ctx) })
+	h.janitor(ctx) // loop.Run 自持 goroutine（GoSafeLabeled），非阻塞
 	return h
 }
 
@@ -247,6 +247,16 @@ func (h *Hub) leave(sess *session, p *peer) {
 
 // ---- 清扫 ----
 
+// janitor 会话清扫循环。
+//
+// 收编 oekit/concurrency/loop.Run（2026-11-03）：手搓「ticker+select+RunSafeLabeled」
+// 逐轮防护形态与 loop.runOnce 同构（每轮 async.RunSafeLabeled→全局 panic handler），
+// ctx 取消即停。等价性核对：
+//   - 首跑时序保持「一个 interval 后」：loop 首轮默认立即跑，用 FirstDelay=interval
+//     对齐原 ticker（首轮到期后才扫）；
+//   - panic 语义不变：会话清扫炸掉=过期会话永不回收、信令表只增不减，故单轮
+//     防护必须保留——loop 每轮自带 RunSafeLabeled(cfg.Name)，内层手包删除；
+//   - 忙时丢 tick 合并（ticker cap=1）与原 ticker 行为一致。
 func (h *Hub) janitor(ctx context.Context) {
 	interval := h.cfg.SessionTTL / 2
 	if interval < 250*time.Millisecond {
@@ -255,34 +265,27 @@ func (h *Hub) janitor(ctx context.Context) {
 	if interval > 30*time.Second {
 		interval = 30 * time.Second
 	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			// 单轮 panic 收编（RunSafeLabeled→全局 panic handler）：会话清扫炸掉=
-			// 过期会话永不回收，信令表只增不减
-			async.RunSafeLabeled("signaling-janitor", func() {
-				now := h.now()
-				h.mu.Lock()
-				var expired []*session
-				for hash, sess := range h.sessions {
-					if now.Sub(sess.createdAt) > h.cfg.SessionTTL {
-						delete(h.sessions, hash)
-						expired = append(expired, sess)
-					}
-				}
-				h.mu.Unlock()
-				for _, sess := range expired {
-					h.metrics.SignalingSessions(-1)
-					sess.broadcast(serverFrame{Type: "error", Message: "会话超时"})
-					sess.closeAll()
-				}
-			})
+	loop.Run(ctx, loop.Config{
+		Interval:   interval,
+		FirstDelay: interval,
+		Name:       "signaling-janitor",
+	}, func(context.Context) {
+		now := h.now()
+		h.mu.Lock()
+		var expired []*session
+		for hash, sess := range h.sessions {
+			if now.Sub(sess.createdAt) > h.cfg.SessionTTL {
+				delete(h.sessions, hash)
+				expired = append(expired, sess)
+			}
 		}
-	}
+		h.mu.Unlock()
+		for _, sess := range expired {
+			h.metrics.SignalingSessions(-1)
+			sess.broadcast(serverFrame{Type: "error", Message: "会话超时"})
+			sess.closeAll()
+		}
+	})
 }
 
 // ---- 出入站帧 ----

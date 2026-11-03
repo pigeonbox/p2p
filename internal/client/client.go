@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/oekit/concurrency/async"
+	"github.com/oekit/concurrency/retry"
 	"github.com/pigeonbox/p2p/internal/wire"
 )
 
@@ -185,34 +185,33 @@ func (c *Client) setupNode(reg *registryAPI) func() {
 
 // resolveRetry 解析带重试:500ms 基准间隔(±20% 抖动,多接收方并发等公告
 // 时不至于齐步冲击注册中心),超过 wait 后以最后一次错误返回。
+//
+// 收编 oekit/concurrency/retry.DoValue(2026-11-02):
+//   - 「±20% 抖动」原是 jitterDur(500ms,0.2) 的居中均匀分布 [400ms,600ms);
+//     retry 的 JitterRatio 是单边向上 [d,d*(1+ratio)) ⇒ 取 Delay=400ms+JitterRatio=0.5
+//     恰好同为 [400ms,600ms) 均匀分布,防雷群语义逐位等价;
+//   - 「超过 wait 以最后一次错误返回」的墙钟 deadline 用 Retryable 门控表达:
+//     过期即不可重试 ⇒ DoValue 立即返回最后一次错误,再包 "解析: %w"(与原
+//     实现逐字一致;原实现的 deadline 检查同样在 attempt 之后,连 per-attempt
+//     5s 超时溢出 deadline 的边界行为也一致);
+//   - Attempts 是安全兜底(理论上界 wait/最小退避+2),实际总是 deadline 门控先截停。
+//   - 行为差异:无。jitterDur 随之删除。
 func (c *Client) resolveRetry(reg *registryAPI, code string, wait time.Duration) (string, error) {
 	deadline := time.Now().Add(wait)
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		id, err := reg.resolve(ctx, code)
-		cancel()
-		if err == nil {
-			return id, nil
-		}
-		if !time.Now().After(deadline) {
-			time.Sleep(jitterDur(500*time.Millisecond, 0.2))
-			continue
-		}
+	id, err := retry.DoValue(context.Background(), retry.Config{
+		Attempts:    int(wait/(400*time.Millisecond)) + 2,
+		Delay:       400 * time.Millisecond,
+		JitterRatio: 0.5, // =500ms±20% 均匀抖动(防雷群)
+		Retryable:   func(error) bool { return !time.Now().After(deadline) },
+	}, func(int) (string, error) {
+		actx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return reg.resolve(actx, code)
+	})
+	if err != nil {
 		return "", fmt.Errorf("解析: %w", err)
 	}
-}
-
-// jitterDur d±d*jitter 的随机时长(抖动防雷群)。
-func jitterDur(d time.Duration, jitter float64) time.Duration {
-	if jitter <= 0 {
-		return d
-	}
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return d
-	}
-	frac := 1 - jitter + 2*jitter*(float64(binary.BigEndian.Uint64(b[:]))/float64(1<<64-1))
-	return time.Duration(float64(d) * frac)
+	return id, nil
 }
 
 // progress 每 1MB 打一条进度日志。

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/oekit/pkg/stringx"
 )
 
 // Config 持久化配置。
@@ -150,10 +152,10 @@ func sanitizeName(name string) string {
 		sb.WriteRune(r)
 	}
 	out := strings.Trim(strings.TrimSpace(sb.String()), ".")
-	runes := []rune(out)
-	if len(runes) > 100 {
-		out = string(runes[len(runes)-100:])
-	}
+	// 限长保后缀（收编 oekit/pkg/stringx.LastN 2026-11-03）：保尾截断、丢前缀
+	// ——文件名尾部（扩展名）比头部更有信息量。原手搓 []rune 取尾 100 与此
+	// 逐语义等价（n<=100 原样返回；n<0 按保留 0 个——此处 n 恒 100 不触边）。
+	out = stringx.LastN(out, 100)
 	if out == "" {
 		out = "file"
 	}

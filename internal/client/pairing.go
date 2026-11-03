@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/oekit/concurrency/retry"
 	"github.com/oekit/pkg/httpjson"
 	"net/http"
 	"time"
@@ -161,7 +162,7 @@ func (r *registryAPI) pairRequests(ctx context.Context, n *nodeIdentity) ([]pair
 
 // doRaw 带状态码的请求：返回 (status, body, nil) 由调用方映射语义。
 //
-// 收编到 **oekit/pkg/httpjson.DoRaw**（v0.28.1 起）：DoJSON 的口径是
+// 收编到 **oekit/pkg/httpjson.DoRaw**：DoJSON 的口径是
 // 「2xx 即成功 + 错误体截断到 200 runes 的摘要」，而本流程要**原文**报文
 // （pairHTTPError 把它带进错误文案）且要**按状态码映射自己的语义**
 // （404/409 → ErrPairUnknown/ErrPairBusy 两个不同哨兵）⇒ DoJSON 不适用。
@@ -222,15 +223,25 @@ func pairClaimToken() string {
 
 // waitPairRequest 亮码方等待敲门：轮询 /requests 直到有人请求（走接受门）
 // 或码过期（返回 "", false，调用方重铸）。返回被接受的 claimer node_id。
+//
+// 收编 oekit/concurrency/retry.Poll(2026-11-02)：2s 定间隔 + 10 分钟墙钟上限，
+// 与 Poll 形状逐位对应。**顺带修一处真缺陷**：原手搓循环的 fetch/approve 失败分支
+// sleep+continue 跳过了底部的 deadline 检查 ⇒ 注册中心持续故障时会越过 10 分钟
+// 上限**死循环**（OnExpired 永不触发）；Poll 的 timeout 是墙钟强制的，条件未达成
+// （cond 回 (false,nil)）不再能越过超时——超时统一走 OnExpired 重铸，与原实现
+// 「deadline 到点触发 OnExpired」的契约一致。
+// 行为差异：仅在注册中心持续故障场景可见（原本死循环，现在 10 分钟后重铸新码）。
 func (c *Client) waitPairRequest(code string, cb PairCallbacks) (string, bool) {
 	ctx := context.Background()
-	deadline := time.Now().Add(10 * time.Minute) // 兜底上限（服务端码 TTL ≤ 该值）
-	for {
-		sessions, _, err := c.reg.pairRequests(ctx, c.id)
-		if err != nil {
-			c.log.Warn("配对轮询失败,重试", "err", err)
-			time.Sleep(pairPollInterval)
-			continue
+	var (
+		claimer  string
+		accepted bool
+	)
+	err := retry.Poll(ctx, pairPollInterval, 10*time.Minute, func() (bool, error) {
+		sessions, _, perr := c.reg.pairRequests(ctx, c.id)
+		if perr != nil {
+			c.log.Warn("配对轮询失败,重试", "err", perr)
+			return false, nil // 可恢复：下一轮再试
 		}
 		var cur *pairSessionView
 		for i := range sessions {
@@ -244,7 +255,7 @@ func (c *Client) waitPairRequest(code string, cb PairCallbacks) (string, bool) {
 			if cb.OnExpired != nil {
 				cb.OnExpired()
 			}
-			return "", false
+			return true, nil
 		}
 		if len(cur.Requests) > 0 {
 			req := PairRequestView{NodeID: cur.Requests[0].NodeID, Name: cur.Requests[0].Name}
@@ -256,27 +267,30 @@ func (c *Client) waitPairRequest(code string, cb PairCallbacks) (string, bool) {
 			if !accept {
 				decision = "deny"
 			}
-			if err := c.reg.pairApprove(ctx, c.id, code, decision, req.NodeID); err != nil {
-				c.log.Warn("裁决失败,重试", "err", err)
-				time.Sleep(pairPollInterval)
-				continue
+			if aerr := c.reg.pairApprove(ctx, c.id, code, decision, req.NodeID); aerr != nil {
+				c.log.Warn("裁决失败,重试", "err", aerr)
+				return false, nil // 可恢复：下一轮重派裁决
 			}
 			if !accept {
 				if cb.OnDenied != nil {
 					cb.OnDenied(req)
 				}
-				return "", false // 拒绝即烧码：重铸
+				return true, nil // 拒绝即烧码：重铸（accepted=false ⇒ 返回 "", false）
 			}
-			return req.NodeID, true
+			claimer = req.NodeID
+			accepted = true
+			return true, nil
 		}
-		if time.Now().After(deadline) {
-			if cb.OnExpired != nil {
-				cb.OnExpired()
-			}
-			return "", false
+		return false, nil
+	})
+	if err != nil || !accepted {
+		// 墙钟超时（retry.ErrTimeout）：与原实现 deadline 到点一致，触发 OnExpired 重铸
+		if err != nil && cb.OnExpired != nil {
+			cb.OnExpired()
 		}
-		time.Sleep(pairPollInterval)
+		return "", false
 	}
+	return claimer, true
 }
 
 // mintPairing 铸码（secret 本地生成，announce 不涉及——配对模式不走联邦公告）。
@@ -316,20 +330,30 @@ func (c *Client) SendPaired(paths []string, cb PairCallbacks) (string, error) {
 // claimPair claim 轮询兑换（pending→granted）。租约由调用方持有（须覆盖
 // 后续信道接入——claim 兑换返回即注销会令 joinChannel 被 4003 拒之门外）。
 // ErrPairUnknown/ErrPairBusy 原样上抛（CLI 据此回退口令解析）。
+//
+// 收编 oekit/concurrency/retry.Poll(2026-11-02)：2s 定间隔轮询。**服务端
+// expiresIn 动态收紧的 deadline 保留在 cond 内**——Poll 的 timeout 是固定墙钟，
+// 表达不了「到期时间只会提前」；收紧语义与原实现逐位一致（expiresIn+1s 早于
+// 当前 deadline 才收紧，过期即 ErrPairUnknown）。cond 回错即中止 ⇒ pairClaim
+// 错误与「配对状态异常」原样上抛，与原实现一致；Poll 的 10 分钟 timeout 仅作
+// 外层兜底，同样映射 ErrPairUnknown。
+// 行为差异：无（ErrPairUnknown/ErrPairBusy 的 errors.Is 分流不受影响）。
 func (c *Client) claimPair(code string, cb PairCallbacks) (pairClaimResp, error) {
 	claimID := pairClaimToken()
 	ctx := context.Background()
 	deadline := time.Now().Add(10 * time.Minute)
-	for {
-		res, expiresIn, err := c.reg.pairClaim(ctx, c.id, code, claimID)
-		if err != nil {
-			return pairClaimResp{}, err
+	var res pairClaimResp
+	err := retry.Poll(ctx, pairPollInterval, 10*time.Minute, func() (bool, error) {
+		r, expiresIn, perr := c.reg.pairClaim(ctx, c.id, code, claimID)
+		if perr != nil {
+			return false, perr // 原样上抛（ErrPairUnknown/ErrPairBusy 由调用方分流）
 		}
-		if res.Status == "granted" {
-			return res, nil
+		if r.Status == "granted" {
+			res = r
+			return true, nil
 		}
-		if res.Status != "pending" {
-			return pairClaimResp{}, fmt.Errorf("配对状态异常: %q", res.Status)
+		if r.Status != "pending" {
+			return false, fmt.Errorf("配对状态异常: %q", r.Status)
 		}
 		if cb.OnPending != nil {
 			cb.OnPending()
@@ -340,10 +364,17 @@ func (c *Client) claimPair(code string, cb PairCallbacks) (pairClaimResp, error)
 			}
 		}
 		if time.Now().After(deadline) {
-			return pairClaimResp{}, ErrPairUnknown
+			return false, ErrPairUnknown
 		}
-		time.Sleep(pairPollInterval)
+		return false, nil
+	})
+	if err != nil {
+		if errors.Is(err, retry.ErrTimeout) {
+			return pairClaimResp{}, ErrPairUnknown // 与原实现 deadline 到点同语义
+		}
+		return pairClaimResp{}, err
 	}
+	return res, nil
 }
 
 // ReceivePaired 敲码接收：claim 兑换 secret → 以 creator 钉定进入既有接收链路。
