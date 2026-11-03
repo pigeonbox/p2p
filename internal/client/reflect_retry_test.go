@@ -84,7 +84,7 @@ func TestReflectOwnRetriesAfterSilentDrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	addr, err := reflectOwn(client, "http://"+f.addr())
 	if err != nil {
@@ -108,7 +108,7 @@ func TestReflectOwnGivesUpWithError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	addr, err := reflectOwn(client, "http://"+f.addr())
 	if err == nil {
@@ -132,7 +132,7 @@ func TestBuildCandidatesWarnsOnReflectFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	var buf bytes.Buffer
 	c := &Client{
@@ -174,7 +174,7 @@ func TestBuildCandidatesNilSocketNoPanic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	c := &Client{opt: Options{Registry: "http://127.0.0.1:1"}, log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
 	ci := c.buildCandidates(client, nil, "") // 无 v6 ⇒ 不得 panic
