@@ -127,16 +127,14 @@ func verifyFP(want string) func(rawCerts [][]byte, _ [][]*x509.Certificate) erro
 	}
 }
 
-// establishQUIC 在打洞成功的 UDP 套接字上建立 QUIC 传输。
+// establishQUICBudget 在打洞成功的 UDP 套接字上建立 QUIC 传输。
 // sender 作为服务端监听;receiver 拨号 punch 验证过的对端地址。
 // 套接字交给 quic.Transport 后不得再用于原始读写(打洞循环须已停止)。
 // 返回控制流 + 数据流工厂(v3 多流)与清理函数。
-func establishQUIC(sock *net.UDPConn, session []byte, cert tls.Certificate, peerFP string, remote *net.UDPAddr, isSender bool) (*xport, error) {
-	return establishQUICBudget(sock, session, cert, peerFP, remote, isSender, 8*time.Second)
-}
-
-// establishQUICBudget 同上,接受/拨号预算可调(先通后优:发送方监听窗口
-// 放宽到升级预算,等接收方补拨)。
+//
+// ⚠️ 预算必须由调用方**显式**给出,且发送侧与拨号侧**必须同源同值**
+// （见 Client.quicOpBudget 与 p2p#20）⇒ 这里**不再提供**带默认预算的包装,
+// 免得某侧悄悄拿到另一个硬编码值 ⇒ 两侧窗口不同步 ⇒ 拨号方在差值 Δ 内拨不通。
 func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate, peerFP string, remote *net.UDPAddr, isSender bool, budget time.Duration) (*xport, error) {
 	tlsBase := &tls.Config{
 		Certificates: []tls.Certificate{cert},

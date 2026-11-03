@@ -34,7 +34,10 @@ const (
 // 全部失败返回 ok=false(调用方照常走打洞/中继,无副作用)。
 func mapUDPPort(sock *net.UDPConn) (ext *net.UDPAddr, release func(), ok bool) {
 	release = func() {}
-	localPort := sock.LocalAddr().(*net.UDPAddr).Port
+	localPort := localPortOf(sock)
+	if localPort == 0 {
+		return nil, release, false
+	}
 
 	gw, localIP := gatewayAndLocalIP()
 	if gw == nil || localIP == nil {
