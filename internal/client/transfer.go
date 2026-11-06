@@ -951,7 +951,10 @@ func recvFileMulti(x *xport, f *os.File, out string, meta metaMsg, opts transfer
 	if err := json.Unmarshal(body, &plan); err != nil {
 		return fmt.Errorf("plan 解析: %w", err)
 	}
-	if plan.Streams < 0 || plan.Streams > 64 {
+	// ⚠️ 下界必须是 1，不是 0（2026-11-06）：streams=0 会让下面的
+	// meta.Size*int64(i)/int64(streams) 变成**整数除零 panic**（对端一帧
+	// 就能打死接收进程）。plan 来自不可信对端，判据按真实值域收口。
+	if plan.Streams < 1 || plan.Streams > 64 {
 		return fmt.Errorf("plan.streams 非法: %d", plan.Streams)
 	}
 	streams := plan.Streams

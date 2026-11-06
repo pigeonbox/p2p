@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oekit/concurrency/async"
@@ -215,11 +216,15 @@ func (c *Client) resolveRetry(reg *registryAPI, code string, wait time.Duration)
 }
 
 // progress 每 1MB 打一条进度日志。
+//
+// ⚠️ 回调会被**多条流的 goroutine 并发调用**（transfer.go 每个 stream 各一条），
+// 此前 last 是裸 int64 闭包变量 ⇒ data race（-race 可复现；读数撕裂会让日志
+// 抖成「每 100KB 一条」或长时间不打印）。改为原子量：仅用于限频，无需严格序。
 func (c *Client) progress() func(got, total int64) {
-	var last int64
+	var last atomic.Int64
 	return func(got, total int64) {
-		if got-last >= 1<<20 || got == total {
-			last = got
+		if got-last.Load() >= 1<<20 || got == total {
+			last.Store(got)
 			c.log.Info("传输进度", "got", got, "total", total)
 		}
 	}
@@ -234,6 +239,13 @@ type xswap struct {
 	all     []*xport // 建立过的全部承载,收尾统一 finish
 	armed   bool     // 发送侧:直连就绪,下一边界换源
 	swapped bool
+	// closed/role:收尾后到达的 upgrade 通道必须**就地回收**
+	// （2026-11-06）。finish 取 all 快照后就放手了，而升级协程可能在此之后
+	// 才 store 成功（监听窗口 25s > 传输耗时）⇒ 该 xport 永远不在任何人的
+	// 收尾清单里 ⇒ QUIC 连接 + 套接字泄漏（每次传输一条）。role 记住收尾角色，
+	// 让后到的通道按同一侧语义 finish。
+	closed bool
+	role   bool
 }
 
 // arm 标记直连就绪(发送侧;由升级协程调用)。
@@ -256,6 +268,13 @@ func (x *xswap) boundary() (swap bool) {
 
 func (x *xswap) store(v *xport) {
 	x.mu.Lock()
+	if x.closed {
+		role := x.role
+		x.mu.Unlock()
+		// 收尾已发生 ⇒ 没人会再来回收它，就地 finish（否则泄漏，见 closed 注释）。
+		v.finish(role)
+		return
+	}
 	x.cur = v
 	x.all = append(x.all, v)
 	x.mu.Unlock()
@@ -270,6 +289,9 @@ func (x *xswap) get() *xport {
 func (x *xswap) finish(isSender bool) {
 	x.mu.Lock()
 	all := x.all
+	x.all = nil // 已回收，防重复 finish
+	x.closed = true
+	x.role = isSender
 	x.mu.Unlock()
 	for _, v := range all {
 		v.finish(isSender)

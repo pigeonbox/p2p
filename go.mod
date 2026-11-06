@@ -7,14 +7,15 @@ toolchain go1.26.10
 require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/klauspost/compress v1.20.3
-	github.com/oekit/concurrency v0.23.3
-	github.com/oekit/core v0.12.1
-	github.com/oekit/network v0.7.5
-	github.com/oekit/pkg v0.32.0
+	github.com/oekit/concurrency v0.25.1
+	github.com/oekit/core v0.12.2
+	github.com/oekit/network v0.7.7
+	github.com/oekit/pkg v0.35.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/quic-go/quic-go v0.64.1
 	github.com/schollz/pake/v3 v3.2.0
 	github.com/spf13/viper v1.21.0
+	github.com/stretchr/testify v1.12.1
 	golang.org/x/crypto v0.58.0
 	golang.org/x/term v0.47.0
 	golang.org/x/time v0.16.0
@@ -27,7 +28,7 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/oekit/logx v0.8.2 // indirect
+	github.com/oekit/logx v0.8.3 // indirect
 	github.com/pelletier/go-toml/v2 v2.3.1 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0 // indirect

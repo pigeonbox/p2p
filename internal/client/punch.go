@@ -1,6 +1,7 @@
 package client
 
 import (
+	"crypto/cipher"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -307,11 +308,31 @@ func punch(sock *net.UDPConn, peer *candInfo, k [32]byte, budget time.Duration) 
 		if err != nil {
 			return nil, errors.New("打洞失败(对端不可直连)")
 		}
+		// 长度判据必须先于切片（2026-11-06 P0）：AEAD 探针报文最短 =
+		// NonceSize(12) + Overhead(16)。此前直接 buf[NonceSize:n]，
+		// n < 12 时 **start > end ⇒ slice bounds out of range ⇒ panic**，
+		// 且这条读循环跑在 establish → Send/Receive 主链上、没有 GoSafe 兜底
+		// ⇒ 任一第三方/损坏 UDP 包即可打死整个传输进程（远端可无条件触发）。
+		// 同包 open() 早就有同样的长度判据（见 punch.go 顶部），此处补齐。
 		// 只认可解密的探针=对端身份确认(防第三方注入)
-		if _, err := aead.Open(nil, buf[:chacha20poly1305.NonceSize], buf[chacha20poly1305.NonceSize:n], nil); err == nil {
+		if probeMatches(aead, buf, n) {
 			return raddr, nil
 		}
 	}
+}
+
+// probeMatches 判读一个打洞探针：长度够（Nonce+Tag）且能用会话密钥解开。
+//
+// ⚠️ 长度判据必须**先于**切片（2026-11-06 P0）：此前调用点直接
+// buf[NonceSize:n]，n < 12 时 start > end ⇒ slice bounds out of range ⇒ panic；
+// 该读循环跑在 establish → Send/Receive 主链上、无 GoSafe 兜底 ⇒ 任一第三方
+// 或损坏的 UDP 包即可打死传输进程。独立成函数是为了能被单测直接锁住。
+func probeMatches(aead cipher.AEAD, buf []byte, n int) bool {
+	if n < aead.NonceSize()+aead.Overhead() {
+		return false
+	}
+	_, err := aead.Open(nil, buf[:aead.NonceSize()], buf[aead.NonceSize():n], nil)
+	return err == nil
 }
 
 // hostOf 基址取 host[:port]。

@@ -65,6 +65,7 @@ func Serve(ctx context.Context, ln net.Listener, p Params) error {
 		waiting:        make(map[string]net.Conn),
 		since:          make(map[string]time.Time),
 		perIP:          make(map[string]int),
+		waitingIP:      make(map[string]string),
 		bytesPerSec:    p.BytesPerSec,
 		maxWaiting:     p.MaxWaiting,
 		maxConnsPerIP:  p.MaxConnsPerIP,
@@ -81,6 +82,9 @@ func Serve(ctx context.Context, ln net.Listener, p Params) error {
 				_ = c.Close()
 				delete(s.waiting, tok)
 				delete(s.since, tok)
+				// 超时清扫 = 连接真正消失 ⇒ 此时才归还 per-IP 槽位
+				s.releaseIPLocked(s.waitingIP[tok])
+				delete(s.waitingIP, tok)
 			}
 		}
 		s.mu.Unlock()
@@ -103,15 +107,37 @@ func Serve(ctx context.Context, ln net.Listener, p Params) error {
 }
 
 type server struct {
-	mu             sync.Mutex
-	waiting        map[string]net.Conn
-	since          map[string]time.Time
-	perIP          map[string]int
+	mu      sync.Mutex
+	waiting map[string]net.Conn
+	since   map[string]time.Time
+	perIP   map[string]int
+	// waitingIP token → 该等待连接占着的 per-IP 槽位属主。
+	// 槽位不能随 handle 返回而释放（见 handle 内的 release 注释），
+	// 必须留到连接被配对/超时清扫/关闭时才归还。
+	waitingIP      map[string]string
 	bytesPerSec    int64
 	maxWaiting     int
 	maxConnsPerIP  int
 	waitingTimeout time.Duration
 	log            *slog.Logger
+}
+
+// releaseIPLocked 归还一个 per-IP 槽位（调用方必须已持 s.mu）。
+func (s *server) releaseIPLocked(ip string) {
+	if ip == "" {
+		return
+	}
+	s.perIP[ip]--
+	if s.perIP[ip] <= 0 {
+		delete(s.perIP, ip)
+	}
+}
+
+// releaseIP 归还一个 per-IP 槽位（自带加锁）。
+func (s *server) releaseIP(ip string) {
+	s.mu.Lock()
+	s.releaseIPLocked(ip)
+	s.mu.Unlock()
 }
 
 func (s *server) handle(ctx context.Context, conn net.Conn) {
@@ -124,13 +150,21 @@ func (s *server) handle(ctx context.Context, conn net.Conn) {
 	}
 	s.perIP[ip]++
 	s.mu.Unlock()
+	// ⚠️ 槽位的**归属**在这条连接的生命期内两次易手（2026-11-06 P1）：
+	//
+	//	handle 存活期          → 由这里持有（release=true）
+	//	挂进 waiting 之后      → 交给 waiting 条目持有（release=false）
+	//
+	// 修复前是「无条件 defer 归还」⇒ 连接一挂进 waiting，handle 立刻返回、
+	// 槽位当场释放，可连接**还躺在 waiting 里占着全局名额**（最长
+	// waitingTimeout=60s）⇒ 攻击者用随机 token 每次开 16 条（上限）、拿到槽位
+	// 立刻被释放 ⇒ 可以无限次灌 waiting，把全局 maxWaiting=1024 占满
+	// ⇒ per-IP 配额在 waiting 阶段**完全失效**（正是当初引入它的那个 DoS 面）。
+	release := true
 	defer func() {
-		s.mu.Lock()
-		s.perIP[ip]--
-		if s.perIP[ip] <= 0 {
-			delete(s.perIP, ip)
+		if release {
+			s.releaseIP(ip)
 		}
-		s.mu.Unlock()
 	}()
 
 	_ = conn.SetDeadline(time.Now().Add(s.waitingTimeout))
@@ -149,8 +183,11 @@ func (s *server) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 	if peer, ok := s.waiting[token]; ok {
+		peerIP := s.waitingIP[token]
 		delete(s.waiting, token)
 		delete(s.since, token)
+		delete(s.waitingIP, token)
+		s.releaseIPLocked(peerIP) // 对端已出队配对 ⇒ 归还它占的槽位
 		s.mu.Unlock()
 		// 配对成功:互为管道(单信道限速),任一端断开即双向关闭
 		// (数据面面向不可信对端,panic 只许死信道不许带崩进程——GoSafe 收编;
@@ -167,7 +204,10 @@ func (s *server) handle(ctx context.Context, conn net.Conn) {
 	}
 	s.waiting[token] = conn
 	s.since[token] = time.Now()
+	s.waitingIP[token] = ip
 	s.mu.Unlock()
+	// 槽位随 waiting 条目走：由配对分支或超时清扫归还（见上方 release 注释）。
+	release = false
 }
 
 // pipe 单向搬运;限速桶按方向共享(双向合计不超过单信道额度)。
