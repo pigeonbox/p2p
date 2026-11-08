@@ -9,6 +9,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -42,8 +43,8 @@ func main() {
 	// kit/async.GoSafe 的 panic 收编日志接线。运行时解析 slog.Default()——
 	// p2pc 按子命令/TTY/JSON 换装 handler(uiHandler/缺省),固定捕获会接到
 	// 换装前的旧 handler 上。
-	async.SetPanicHandler(func(msg string, stack []byte) {
-		slog.Error("goroutine panic recovered", "msg", msg, "stack", string(stack))
+	async.SetPanicHandler(func(_ context.Context, r any, stack []byte) {
+		slog.Error("goroutine panic recovered", "msg", r, "stack", string(stack))
 	})
 	if len(os.Args) < 2 {
 		usage()

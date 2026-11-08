@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -50,8 +51,8 @@ type options struct {
 func main() {
 	// kit/async.GoSafe 的 panic 收编日志接线:走本入口 logf(零时间前缀,
 	// 与启动横幅/事件行同款式);服务模式与传输子模式共用此 main,一并覆盖。
-	async.SetPanicHandler(func(msg string, stack []byte) {
-		logf("⚠ goroutine panic recovered: %s\n%s", msg, string(stack))
+	async.SetPanicHandler(func(_ context.Context, r any, stack []byte) {
+		logf("⚠ goroutine panic recovered: %s\n%s", r, string(stack))
 	})
 	for _, a := range os.Args[1:] {
 		if a == "-v" || a == "--version" || a == "version" {
