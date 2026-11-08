@@ -19,7 +19,9 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/qlog"
+	// 空导入仅为副作用：qlog 的 init() 会 qlogwriter.RegisterEventSchema(EventSchema)，
+	// 少了它写出的 .qlog 里没有 event schema（v0.65 起 schema 走全局注册，不再逐次传参）。
+	_ "github.com/quic-go/quic-go/qlog"
 	"github.com/quic-go/quic-go/qlogwriter"
 
 	"github.com/pigeonbox/p2p/internal/wire"
@@ -167,7 +169,9 @@ func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate
 		}
 		qcfg.Tracer = func(_ context.Context, isClient bool, connID quic.ConnectionID) qlogwriter.Trace {
 			f, _ := os.Create(filepath.Join(qlogDir, role+"-"+connID.String()+".qlog"))
-			return qlogwriter.NewConnectionFileSeq(f, isClient, connID, []string{qlog.EventSchema})
+			// quic-go v0.65 起 qlogwriter 不再逐次传 schema：QUIC 的 event schema 改为
+			// 由 qlog 包 init() 里 qlogwriter.RegisterEventSchema 全局注册（见下方空导入）。
+			return qlogwriter.NewConnectionFileSeq(f, isClient, connID)
 		}
 	}
 	tr := &quic.Transport{Conn: sock}
