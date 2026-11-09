@@ -10,7 +10,7 @@ require (
 	github.com/oekit/concurrency v0.31.0
 	github.com/oekit/core v0.13.5
 	github.com/oekit/network v0.7.14
-	github.com/oekit/pkg v0.40.0
+	github.com/oekit/pkg v0.41.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/quic-go/quic-go v0.65.0
 	github.com/schollz/pake/v3 v3.2.1
