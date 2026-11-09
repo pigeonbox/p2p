@@ -379,7 +379,7 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 	if fast > 1500*time.Millisecond {
 		fast = 1500 * time.Millisecond
 	}
-	tgt, punchErr := punchDual(sock4, sock6, peer, k, fast, mapped)
+	tgt, punchErr := punchDual(sock4, sock6, peer, k, fast, mapped, c.log)
 
 	if punchErr == nil {
 		// 打洞胜出族交接前清读截止(2026-10-15 定长墙根因):punch 在 socket 上
@@ -397,9 +397,9 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 		var x *xport
 		var derr error
 		if isSender {
-			x, derr = establishQUICBudget(tgt.sock, session, cert, peer.CertFP, nil, true, c.quicOpBudget())
+			x, derr = establishQUICBudget(tgt.sock, session, cert, peer.CertFP, nil, true, c.quicOpBudget(), c.log)
 		} else {
-			x, derr = establishQUICBudget(tgt.sock, session, cert, peer.CertFP, remote, false, c.quicOpBudget())
+			x, derr = establishQUICBudget(tgt.sock, session, cert, peer.CertFP, remote, false, c.quicOpBudget(), c.log)
 		}
 		if derr == nil {
 			return x, "quic-direct(" + famOf(tgt.sock) + ")", nil
@@ -421,7 +421,7 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 			fallReason = "仅直连模式"
 		}
 		c.log.Info(fallReason+",长打洞兜底", "budget", c.opt.PunchBudget.String())
-		tgt2, err2 := punchDual(sock4, sock6, peer, k, c.opt.PunchBudget, mapped)
+		tgt2, err2 := punchDual(sock4, sock6, peer, k, c.opt.PunchBudget, mapped, c.log)
 		if err2 != nil {
 			return nil, "", fmt.Errorf("打洞失败且%s: %w", fallReason, err2)
 		}
@@ -435,13 +435,13 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 		var x *xport
 		var derr error
 		if isSender {
-			x, derr = establishQUICBudget(tgt2.sock, session, cert, peer.CertFP, nil, true, c.quicOpBudget())
+			x, derr = establishQUICBudget(tgt2.sock, session, cert, peer.CertFP, nil, true, c.quicOpBudget(), c.log)
 		} else {
 			// ⚠️ 拨号侧预算必须与发送侧**同值**(p2p#20):两侧的 QUIC 窗口各自从
 			// **自己**打洞结束那刻起算 ⇒ 打洞结束时刻相差 Δ 时,拨号方必须活过 Δ。
 			// 此前拨号侧固定 8s、发送侧 PunchBudget+5s ⇒ 不对称 ⇒ 拨号方常在
 			// 对侧就绪前就超时("quic 拨号: context deadline exceeded")。
-			x, derr = establishQUICBudget(tgt2.sock, session, cert, peer.CertFP, peer.pickUDP(famOf(tgt2.sock)), false, c.quicOpBudget())
+			x, derr = establishQUICBudget(tgt2.sock, session, cert, peer.CertFP, peer.pickUDP(famOf(tgt2.sock)), false, c.quicOpBudget(), c.log)
 		}
 		if derr != nil {
 			_ = tgt2.sock.Close()
@@ -490,7 +490,7 @@ func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.
 	async.GoSafe(func() {
 		tgt := fastTgt
 		if tgt == nil {
-			t, err := punchDual(sock4, sock6, peer, k, 30*time.Second, mapped)
+			t, err := punchDual(sock4, sock6, peer, k, 30*time.Second, mapped, c.log)
 			if err != nil {
 				c.log.Info("后台打洞未通(全程中继)", "reason", err.Error())
 				return
@@ -508,7 +508,7 @@ func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.
 		// 后监听会让接收方拨号扑空,双侧互相等待超时)
 		dxCh := make(chan *xport, 1)
 		async.GoSafe(func() {
-			dx, err := establishQUICBudget(tgt.sock, session, cert, ownNew.CertFP, nil, true, upgradeOpBudget)
+			dx, err := establishQUICBudget(tgt.sock, session, cert, ownNew.CertFP, nil, true, upgradeOpBudget, c.log)
 			if err == nil {
 				dxCh <- dx
 			}
@@ -560,7 +560,7 @@ func (c *Client) startUpgradeReceiver(sw *xswap, relayX *xport, sock4, sock6 *ne
 		}
 		// 预算与监听侧**同值**(upgradeOpBudget):监听侧等补拨、拨号侧等监听,
 		// 不同步 ⇒ 拨号侧会在监听就绪前超时(p2p#20 同款根因)。
-		dx, derr := establishQUICBudget(sock, session, cert, peerNew.CertFP, remote, false, upgradeOpBudget)
+		dx, derr := establishQUICBudget(sock, session, cert, peerNew.CertFP, remote, false, upgradeOpBudget, c.log)
 		if derr != nil {
 			c.log.Info("升级拨号失败(留中继)", "err", derr)
 			return
@@ -756,7 +756,7 @@ func (c *Client) setupNodeAnnounce(code string) (func(), error) {
 	return func() {}, fmt.Errorf("公告: 全部注册中心不可用(%d 个)", len(chain))
 }
 
-// discardHandler Quiet 模式的空日志处理器。// discardHandler Quiet 模式的空日志处理器。// discardHandler Quiet 模式的空日志处理器。// discardHandler Quiet 模式的空日志处理器。
+// discardHandler Quiet 模式的空日志处理器。
 type discardHandler struct{}
 
 func (discardHandler) Enabled(_ context.Context, _ slog.Level) bool  { return false }

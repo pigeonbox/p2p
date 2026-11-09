@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/oekit/concurrency/async"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -192,7 +193,12 @@ type punchTarget struct {
 // punchDual v4/v6 双栈同时打洞:两族各自同时开洞,任一路径先验证成功即胜出
 // (族间独立套接字——显式单栈是 QUIC 地址族一致性的前提)。maps 为端口映射
 // 候选(外部地址,从同族套接字发探针)。
-func punchDual(sock4, sock6 *net.UDPConn, peer *candInfo, k [32]byte, budget time.Duration, mapped4 string) (*punchTarget, error) {
+//
+// 打洞耗时是 QUIC 窗口差值 Δ 的主要来源（p2p#20/#23）：log 打点给出
+// 「打了多久、哪个族胜出/为何失败」，CI flake 复现时可直接从日志读出
+// 两侧各自的打洞时间线。
+func punchDual(sock4, sock6 *net.UDPConn, peer *candInfo, k [32]byte, budget time.Duration, mapped4 string, log *slog.Logger) (*punchTarget, error) {
+	punchStart := time.Now()
 	type res struct {
 		v6   bool
 		addr *net.UDPAddr
@@ -232,6 +238,11 @@ func punchDual(sock4, sock6 *net.UDPConn, peer *candInfo, k [32]byte, budget tim
 	select {
 	case r := <-resCh:
 		// 胜出即刻返回;另一族由调用方关闭套接字终止
+		fam := "v4"
+		if r.v6 {
+			fam = "v6"
+		}
+		log.Info("打洞成功", "fam", fam, "elapsed", time.Since(punchStart).String(), "budget", budget.String())
 		return &punchTarget{sock: func() *net.UDPConn {
 			if r.v6 {
 				return sock6
@@ -239,8 +250,10 @@ func punchDual(sock4, sock6 *net.UDPConn, peer *candInfo, k [32]byte, budget tim
 			return sock4
 		}(), addr: r.addr}, nil
 	case <-done:
+		log.Warn("打洞失败(双族均未通)", "elapsed", time.Since(punchStart).String(), "budget", budget.String())
 		return nil, errors.New("打洞失败(v4/v6 均未通,对端不可直连)")
 	case <-time.After(budget + 2*time.Second):
+		log.Warn("打洞超时", "elapsed", time.Since(punchStart).String(), "budget", budget.String())
 		return nil, errors.New("打洞超时")
 	}
 }
