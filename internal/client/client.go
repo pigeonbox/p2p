@@ -361,7 +361,8 @@ func (c *Client) buildCandidates(sock4, sock6 *net.UDPConn, mapped string) *cand
 //
 // ⇒ 统一取「打洞预算 + 握手余量」:任一侧最晚在 PunchBudget 后就绪,
 // 对侧窗口覆盖它 ⇒ 必成。生产默认 PunchBudget=4s ⇒ 9s(与原 8s 同量级,
-// 「快速失败落中继」的设计意图保留);测试把 PunchBudget 抬到 20s 时 ⇒ 25s。
+// 「快速失败落中继」的设计意图保留);测试预算三轮放宽后 PunchBudget=45s ⇒ 50s
+// （放宽史 3s→6s→20s→45s,见 #23）。
 func (c *Client) quicOpBudget() time.Duration {
 	return c.opt.PunchBudget + 5*time.Second
 }
