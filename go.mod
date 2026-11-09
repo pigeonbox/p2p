@@ -12,7 +12,7 @@ require (
 	github.com/oekit/network v0.7.13
 	github.com/oekit/pkg v0.38.0
 	github.com/prometheus/client_golang v1.25.0
-	github.com/quic-go/quic-go v0.65.0
+	github.com/quic-go/quic-go v0.64.1
 	github.com/schollz/pake/v3 v3.2.1
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.1
