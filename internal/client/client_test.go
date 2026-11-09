@@ -118,9 +118,11 @@ func waitForAnnounce(t *testing.T, base, code string) {
 
 func TestSendRecvLoopbackPunch(t *testing.T) {
 	f := newFixture(t, false)
-	// 全量 -race 套件并行负载下 3s 打洞预算偶发被挤爆(抖动,非回归):
-	// 放宽到 6s,失败仍会走"中继不可用"硬失败路径,不掩盖真回归
-	optsOverride := func(o *Options) { o.PunchBudget = 20 * time.Second }
+	// 打洞/QUIC 建立预算放宽史（CI 并行负载逐步升高，预算边界 flake 三轮）:
+	// 3s→6s(初版注释)→20s(p2p#20 对称化后)→45s(本轮回,#23):quicOpBudget=
+	// PunchBudget+5s,对侧就绪差值 Δ 在 CI 负载下再次顶穿 20+5s 窗口(三次失败
+	// 同秒数 26.6s=预算到期铁证)。失败仍会走"中继不可用"硬失败路径,不掩盖真回归。
+	optsOverride := func(o *Options) { o.PunchBudget = 45 * time.Second }
 	_ = optsOverride
 	code, err := GenerateCode()
 	if err != nil {
@@ -131,7 +133,7 @@ func TestSendRecvLoopbackPunch(t *testing.T) {
 	src := randomFile(t, sendDir, "hello-传输.bin", 1<<20) // 1MB
 
 	so := testOpts(f, "send")
-	so.PunchBudget = 20 * time.Second
+	so.PunchBudget = 45 * time.Second
 	errCh := make(chan error, 1)
 	go func() {
 		c, err := New(so)
@@ -145,7 +147,7 @@ func TestSendRecvLoopbackPunch(t *testing.T) {
 
 	waitForAnnounce(t, f.base, code)
 	ro := testOpts(f, "recv")
-	ro.PunchBudget = 20 * time.Second
+	ro.PunchBudget = 45 * time.Second
 	c, err := New(ro)
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +257,7 @@ func TestSendRecvMultiStreamDirect(t *testing.T) {
 	src := randomFile(t, sendDir, "multi-stream.bin", 8<<20) // 恰在多流阈值上
 
 	so := testOpts(f, "send")
-	so.PunchBudget = 20 * time.Second
+	so.PunchBudget = 45 * time.Second
 	errCh := make(chan error, 1)
 	go func() {
 		c, err := New(so)
@@ -269,7 +271,7 @@ func TestSendRecvMultiStreamDirect(t *testing.T) {
 
 	waitForAnnounce(t, f.base, code)
 	ro := testOpts(f, "recv")
-	ro.PunchBudget = 20 * time.Second
+	ro.PunchBudget = 45 * time.Second
 	c, err := New(ro)
 	if err != nil {
 		t.Fatal(err)
