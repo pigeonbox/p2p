@@ -9,6 +9,7 @@ import (
 	"github.com/oekit/concurrency/async"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -63,8 +64,11 @@ func open(key [32]byte, data []byte) ([]byte, error) {
 // 预算刻意压得比「一次 1s」短：反射是**本机到 registry 的 UDP 往返**，正常
 // 是亚毫秒级；拉长单次预算只会让失败时的等待更长。
 const (
-	reflectAttempts    = 3
-	reflectQueryBudget = 600 * time.Millisecond
+	reflectAttempts = 3
+	// reflectQueryBudget 1.5s（p2p#23 第二层）：600ms 对公网反射器的 RTT+处理
+	// 抖动偏紧（跨洲单跳即 300ms+），且测试环境反射器与查询方同进程、负载
+	// 挤压下调度延迟即超。1.5s×3 次最坏 4.95s，仍属准备阶段一次性开销。
+	reflectQueryBudget = 1500 * time.Millisecond
 	reflectRetryDelay  = 150 * time.Millisecond
 )
 
@@ -121,10 +125,12 @@ func lanCandidates6(sock *net.UDPConn) []string {
 	if port == 0 {
 		return nil // 无 v6 环境 ⇒ 无候选（不是 panic）
 	}
-	var out []string
+	// loopback 候选（同 lanCandidates 的 v4 注释，p2p#23）：同机直传 + 测试环境
+	// 不再依赖同进程 reflect。
+	out := []string{net.JoinHostPort("::1", strconv.Itoa(port))}
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return nil
+		return out
 	}
 	for _, ifc := range ifaces {
 		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
@@ -156,10 +162,15 @@ func lanCandidates(sock *net.UDPConn) []string {
 	if port == 0 {
 		return nil
 	}
-	var out []string
+	// loopback 候选（p2p#23 第三层根因修复）：同机直传是真实部署场景（fnos 预接线
+	// Beam→Box、NAS 本机桌面端），此前排除 loopback ⇒ 同机对端在 LAN/公网候选
+	// 全缺席时只能靠 reflect——而回环测试环境里 reflect 服务端与打洞方同进程,
+	// 负载挤压下 600ms 预算超时 ⇒ 零候选 ⇒ 打洞必败（CI flake 的结构性来源）。
+	// 对远端对端多发一个探针目标无害（探针是加密探针,不可达即无响应）。
+	out := []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return nil
+		return out
 	}
 	for _, ifc := range ifaces {
 		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {

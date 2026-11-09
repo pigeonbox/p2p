@@ -44,10 +44,11 @@ func TestQUICBudgetSymmetry(t *testing.T) {
 		if name != "establishQUICBudget" {
 			return true
 		}
-		if len(call.Args) == 0 {
-			t.Fatalf("establishQUICBudget 调用缺预算实参")
+		if len(call.Args) < 2 {
+			t.Fatalf("establishQUICBudget 调用实参不全（budget + log 两段——缺任一即判废）")
 		}
-		arg := call.Args[len(call.Args)-1]
+		// 预算实参是倒数第二段（末段是时间线日志的 *slog.Logger，p2p#23）
+		arg := call.Args[len(call.Args)-2]
 		switch e := arg.(type) {
 		case *ast.Ident:
 			// upgradeOpBudget（常量名）
@@ -62,6 +63,11 @@ func TestQUICBudgetSymmetry(t *testing.T) {
 				t.Fatalf("QUIC 预算实参是别的调用（%T）⇒ 必须用 c.quicOpBudget() 或 upgradeOpBudget", arg)
 			}
 			allowed["c.quicOpBudget()"] = true
+		case *ast.SelectorExpr:
+			// c.log（时间线日志参数，p2p#23）——只允许这个 selector 作为预算位
+			// 之外的形态；落在预算位上（参数错位）时 sel 名不是 quicOpBudget 而被
+			// 上面的 CallExpr 分支拒 ⇒ 这里只处理把 log 传进预算位也不放行
+			t.Fatalf("QUIC 预算实参是裸选择器 %q（疑似 log 参数错位进预算位）⇒ 只允许 c.quicOpBudget() / upgradeOpBudget", e.Sel.Name)
 		case *ast.BinaryExpr:
 			// 字面量表达式（如 8*time.Second）⇒ 不允许
 			t.Fatalf("QUIC 预算实参是字面量表达式 ⇒ 两侧会再次不同步（p2p#20）")

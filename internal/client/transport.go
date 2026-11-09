@@ -159,8 +159,14 @@ func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate
 	}
 	tlsBase.VerifyPeerCertificate = verifyFP(peerFP)
 	qcfg := &quic.Config{
-		MaxIdleTimeout:       60 * time.Second,
-		HandshakeIdleTimeout: 10 * time.Second,
+		MaxIdleTimeout: 60 * time.Second,
+		// HandshakeIdleTimeout 随 budget 走（p2p#23 根因修复）：此前固定 10s——
+		// 发送侧快打洞失败落入长打洞(PunchBudget 量级)时,接收侧 dial 在 10s
+		// idle 处被 QUIC 内部超时杀掉("no recent network activity"),opCtx 预算
+		// (PunchBudget+5s,p2p#20 对称化)根本没用上 ⇒ 预算怎么放宽都复发。
+		// 抬到 budget+2s ⇒ dial 的死活由 opCtx 单一裁决,两侧预算对称化真正生效
+		// (握手正常时亚秒完成,idle 上限只是兜底,抬高无代价)。
+		HandshakeIdleTimeout: budget + 2*time.Second,
 		KeepAlivePeriod:      15 * time.Second,
 		// 流控窗口(局域网 BDP 量级):高速直传的吞吐优化,给接收侧写盘抖动留缓冲。
 		// ⚠️ 曾被误当"68MB/83.5s 定长墙"的修复——真根因是 punch 在 socket 上留的
