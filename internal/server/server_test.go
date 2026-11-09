@@ -414,9 +414,13 @@ func TestResolvePerHashRateLimit(t *testing.T) {
 	ts, _ := newTestServer(t, nil)
 	c := testClient{t: t, base: ts}
 	hash := strings.Repeat("a", 64)
-	// 单 hash 超过 10/s 突发 60 后必须 429(IP 维度限额远未触顶)
+	// 单 hash 超过 10/s 突发 60 后必须 429(IP 维度限额远未触顶)。
+	// 循环 200 的算术(#23 邻座 flake,同负载敏感家族):令牌桶 10/s 补充,
+	// -race 并行负载下 HTTP 往返最坏 ~30ms/个 ⇒ 6s 跨窗补回 60 个突发,
+	// 70 个请求只有 9 个余量曾被挤穿(单跑×3/基线钉版全绿=负载敏感 flake);
+	// 200 个覆盖「突发 60+6s 全补充 60+抖动」,本地回环 200 请求 <2s。
 	var last int
-	for i := 0; i < 70; i++ {
+	for i := 0; i < 200; i++ {
 		resp, _ := c.do(http.MethodGet, "/v1/resolve/"+hash, nil, nil)
 		last = resp.StatusCode
 		if last == http.StatusTooManyRequests {
