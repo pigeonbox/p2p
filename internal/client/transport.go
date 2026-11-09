@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net"
 	"os"
@@ -137,7 +138,16 @@ func verifyFP(want string) func(rawCerts [][]byte, _ [][]*x509.Certificate) erro
 // ⚠️ 预算必须由调用方**显式**给出,且发送侧与拨号侧**必须同源同值**
 // （见 Client.quicOpBudget 与 p2p#20）⇒ 这里**不再提供**带默认预算的包装,
 // 免得某侧悄悄拿到另一个硬编码值 ⇒ 两侧窗口不同步 ⇒ 拨号方在差值 Δ 内拨不通。
-func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate, peerFP string, remote *net.UDPAddr, isSender bool, budget time.Duration) (*xport, error) {
+func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate, peerFP string, remote *net.UDPAddr, isSender bool, budget time.Duration, log *slog.Logger) (*xport, error) {
+	// 阶段时间线（p2p#23 根因追踪面）：打洞→QUIC 交接此前零日志，CI 上
+	// 「no recent network activity」只能靠秒数反推；三条打点给出
+	// 角色/预算/握手耗时，flake 复现时日志即可定位 Δ 消耗环节。
+	started := time.Now()
+	role := "receiver-dial"
+	if isSender {
+		role = "sender-listen"
+	}
+	log.Info("quic 交接开始", "role", role, "budget", budget.String())
 	tlsBase := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		NextProtos:   []string{quicALPN},
@@ -149,8 +159,14 @@ func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate
 	}
 	tlsBase.VerifyPeerCertificate = verifyFP(peerFP)
 	qcfg := &quic.Config{
-		MaxIdleTimeout:       60 * time.Second,
-		HandshakeIdleTimeout: 10 * time.Second,
+		MaxIdleTimeout: 60 * time.Second,
+		// HandshakeIdleTimeout 随 budget 走（p2p#23 根因修复）：此前固定 10s——
+		// 发送侧快打洞失败落入长打洞(PunchBudget 量级)时,接收侧 dial 在 10s
+		// idle 处被 QUIC 内部超时杀掉("no recent network activity"),opCtx 预算
+		// (PunchBudget+5s,p2p#20 对称化)根本没用上 ⇒ 预算怎么放宽都复发。
+		// 抬到 budget+2s ⇒ dial 的死活由 opCtx 单一裁决,两侧预算对称化真正生效
+		// (握手正常时亚秒完成,idle 上限只是兜底,抬高无代价)。
+		HandshakeIdleTimeout: budget + 2*time.Second,
 		KeepAlivePeriod:      15 * time.Second,
 		// 流控窗口(局域网 BDP 量级):高速直传的吞吐优化,给接收侧写盘抖动留缓冲。
 		// ⚠️ 曾被误当"68MB/83.5s 定长墙"的修复——真根因是 punch 在 socket 上留的
@@ -191,9 +207,11 @@ func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate
 			_ = tr.Close()
 			return nil, fmt.Errorf("quic 监听: %w", err)
 		}
+		log.Info("quic 监听就绪(等待对端拨号)", "budget", budget.String())
 		qc, err = ln.Accept(opCtx)
 		if err != nil {
 			_ = tr.Close()
+			log.Warn("quic 接受连接失败(对端未在预算内拨入)", "waited", time.Since(started).String(), "err", err)
 			return nil, fmt.Errorf("quic 接受连接: %w", err)
 		}
 		stream, err = qc.OpenStreamSync(opCtx)
@@ -206,6 +224,7 @@ func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate
 		qc, err = tr.Dial(opCtx, remote, tlsBase, qcfg)
 		if err != nil {
 			_ = tr.Close()
+			log.Warn("quic 拨号失败(对端未在预算内监听/无响应)", "waited", time.Since(started).String(), "err", err)
 			return nil, fmt.Errorf("quic 拨号: %w", err)
 		}
 		stream, err = qc.AcceptStream(opCtx)
@@ -228,6 +247,7 @@ func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate
 	}}
 	// 两侧都挂对端关闭信号(见 xport.peerClosed 的说明)。
 	x.peerClosed = qc.Context().Done()
+	log.Info("quic 交接完成", "role", role, "elapsed", time.Since(started).String())
 	if isSender {
 		x.open = func(ctx context.Context, seg int) (*wire.Conn, error) {
 			st, err := qc.OpenStreamSync(ctx)

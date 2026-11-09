@@ -82,7 +82,7 @@ func testOpts(f *fixture, nodeTag string) Options {
 		NodeKeyPath: filepath.Join(os.TempDir(), fmt.Sprintf("fcb-e2e-%s-%d.key", nodeTag, time.Now().UnixNano())),
 		RelayAddr:   f.relay,
 		PunchBudget: 3 * time.Second,
-		Quiet:       true,
+		Quiet:       !testLogEnabled(),
 	}
 }
 
@@ -115,6 +115,11 @@ func waitForAnnounce(t *testing.T, base, code string) {
 }
 
 // ---- 用例 ----
+
+// testLogEnabled CI flake 取证开关（p2p#23）：默认静音保持 go test 输出洁净；
+// PB_P2P_TEST_LOG=1 时打洞/QUIC 交接的阶段时间线日志（feat/punch-quic-timeline-log
+// 新增）直输出 stderr——复现 run 设此 env，失败即带完整两侧时间线。
+func testLogEnabled() bool { return os.Getenv("PB_P2P_TEST_LOG") != "" }
 
 func TestSendRecvLoopbackPunch(t *testing.T) {
 	f := newFixture(t, false)
@@ -322,7 +327,7 @@ func TestRelayAddrDerivation(t *testing.T) {
 		"http://p2p:12346":           "p2p:12347",
 	}
 	for reg, want := range cases {
-		c, err := New(Options{Registry: reg, NodeKeyPath: filepath.Join(t.TempDir(), "k"), Quiet: true})
+		c, err := New(Options{Registry: reg, NodeKeyPath: filepath.Join(t.TempDir(), "k"), Quiet: !testLogEnabled()})
 		if err != nil {
 			t.Fatal(err)
 		}
