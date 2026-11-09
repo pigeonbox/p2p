@@ -159,7 +159,15 @@ func TestSendRecvLoopbackPunch(t *testing.T) {
 	}
 	outFiles, err := c.Receive(code, recvDir)
 	if err != nil {
-		t.Fatalf("接收: %v", err)
+		// 发送侧错误可能同时发生（四层 flake 家族的现场盲区：#28 前 CI 输出
+		// 只有「接收:」一侧——发送侧 errCh 没人读，现场丢失）。Fatal 前非阻塞
+		// Drain，两侧现场一次拿全。
+		select {
+		case e := <-errCh:
+			t.Fatalf("接收: %v（发送侧: %v）", err, e)
+		default:
+			t.Fatalf("接收: %v（发送侧仍在跑，无错误上报）", err)
+		}
 	}
 	if err := <-errCh; err != nil {
 		t.Fatalf("发送: %v", err)
@@ -196,7 +204,15 @@ func TestSendRecvForcedRelay(t *testing.T) {
 	}
 	outFiles, err := c.Receive(code, recvDir)
 	if err != nil {
-		t.Fatalf("接收: %v", err)
+		// 发送侧错误可能同时发生（四层 flake 家族的现场盲区：#28 前 CI 输出
+		// 只有「接收:」一侧——发送侧 errCh 没人读，现场丢失）。Fatal 前非阻塞
+		// Drain，两侧现场一次拿全。
+		select {
+		case e := <-errCh:
+			t.Fatalf("接收: %v（发送侧: %v）", err, e)
+		default:
+			t.Fatalf("接收: %v（发送侧仍在跑，无错误上报）", err)
+		}
 	}
 	if err := <-errCh; err != nil {
 		t.Fatalf("发送: %v", err)
@@ -243,7 +259,15 @@ func TestSendRecvResumeFromPartial(t *testing.T) {
 	}
 	outFiles, err := c.Receive(code, recvDir)
 	if err != nil {
-		t.Fatalf("接收: %v", err)
+		// 发送侧错误可能同时发生（四层 flake 家族的现场盲区：#28 前 CI 输出
+		// 只有「接收:」一侧——发送侧 errCh 没人读，现场丢失）。Fatal 前非阻塞
+		// Drain，两侧现场一次拿全。
+		select {
+		case e := <-errCh:
+			t.Fatalf("接收: %v（发送侧: %v）", err, e)
+		default:
+			t.Fatalf("接收: %v（发送侧仍在跑，无错误上报）", err)
+		}
 	}
 	if err := <-errCh; err != nil {
 		t.Fatalf("发送: %v", err)
@@ -283,7 +307,15 @@ func TestSendRecvMultiStreamDirect(t *testing.T) {
 	}
 	outFiles, err := c.Receive(code, recvDir)
 	if err != nil {
-		t.Fatalf("接收: %v", err)
+		// 发送侧错误可能同时发生（四层 flake 家族的现场盲区：#28 前 CI 输出
+		// 只有「接收:」一侧——发送侧 errCh 没人读，现场丢失）。Fatal 前非阻塞
+		// Drain，两侧现场一次拿全。
+		select {
+		case e := <-errCh:
+			t.Fatalf("接收: %v（发送侧: %v）", err, e)
+		default:
+			t.Fatalf("接收: %v（发送侧仍在跑，无错误上报）", err)
+		}
 	}
 	if err := <-errCh; err != nil {
 		t.Fatalf("发送: %v", err)
