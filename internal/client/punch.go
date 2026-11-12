@@ -201,9 +201,22 @@ type punchTarget struct {
 	addr *net.UDPAddr
 }
 
+// punchOne 单族打洞入口(punchDual 经此调用)。包级变量仅为测试定向注入
+// 「验证成功后延迟返回」保留(p2p#33 判据:按套接字延迟可稳定构造双栈错位);
+// 生产恒为 punch,不得替换语义。
+var punchOne = punch
+
 // punchDual v4/v6 双栈同时打洞:两族各自同时开洞,任一路径先验证成功即胜出
 // (族间独立套接字——显式单栈是 QUIC 地址族一致性的前提)。maps 为端口映射
 // 候选(外部地址,从同族套接字发探针)。
+//
+// ⚠️ 返回前统一 **quiesce**(p2p#33 根因②,2026-11-12):停掉仍在跑的打洞
+// 协程(读截止推到「现在」逼出阻塞读),等全部退出后把两族读截止归零——
+// 返回即保证「打洞循环必已停、套接字干净」,这是交接 quic.Transport
+// (transport.go:135 括注的本意)与回退长打洞复用的前置条件。
+// **只停不关**:败族套接字必须留给回退长打洞/升级通道——旧实现在 establish
+// 里胜出即 Close 败族,双栈错位时两侧败族恰为对方胜族要探的目标 ⇒ 回退
+// 长打洞互相收不到探针 ⇒ 满预算 45s 空转后硬失败(CI 101.55s 的第二现场)。
 //
 // 打洞耗时是 QUIC 窗口差值 Δ 的主要来源（p2p#20/#23）：log 打点给出
 // 「打了多久、哪个族胜出/为何失败」，CI flake 复现时可直接从日志读出
@@ -236,7 +249,7 @@ func punchDual(sock4, sock6 *net.UDPConn, peer *candInfo, k [32]byte, budget tim
 					p.UDPLAN = append(append([]string{}, p.UDPLAN...), mapped4)
 				}
 			}
-			addr, err := punch(sock, &p, k, budget)
+			addr, err := punchOne(sock, &p, k, budget)
 			if err == nil {
 				resCh <- res{v6: v6, addr: addr}
 			}
@@ -246,9 +259,30 @@ func punchDual(sock4, sock6 *net.UDPConn, peer *candInfo, k [32]byte, budget tim
 	run(true, sock6, nil)
 	done := make(chan struct{})
 	async.GoSafeLabeled("punch-wait-close", func() { wg.Wait(); close(done) })
+	// quiesce 统一收尾(幂等):逼出阻塞读 → 等全部打洞协程退出 → 读截止归零。
+	// 只停不关(见函数文档);任何返回路径都先过它,调用方拿到的套接字永远是
+	// 「无读协程、无残留截止」的干净态。
+	var quiesceOnce sync.Once
+	quiesce := func() {
+		quiesceOnce.Do(func() {
+			for _, s := range []*net.UDPConn{sock4, sock6} {
+				if s != nil {
+					_ = s.SetReadDeadline(time.Now())
+				}
+			}
+			<-done
+			for _, s := range []*net.UDPConn{sock4, sock6} {
+				if s != nil {
+					_ = s.SetReadDeadline(time.Time{})
+				}
+			}
+		})
+	}
 	select {
 	case r := <-resCh:
-		// 胜出即刻返回;另一族由调用方关闭套接字终止
+		// 胜出即返;先 quiesce 收掉非胜出族的打洞协程(胜出族读循环已自退),
+		// 败族套接字**保留**(p2p#33)。
+		quiesce()
 		fam := "v4"
 		if r.v6 {
 			fam = "v6"
@@ -261,9 +295,11 @@ func punchDual(sock4, sock6 *net.UDPConn, peer *candInfo, k [32]byte, budget tim
 			return sock4
 		}(), addr: r.addr}, nil
 	case <-done:
+		quiesce()
 		log.Warn("打洞失败(双族均未通)", "elapsed", time.Since(punchStart).String(), "budget", budget.String())
 		return nil, errors.New("打洞失败(v4/v6 均未通,对端不可直连)")
 	case <-time.After(budget + 2*time.Second):
+		quiesce()
 		log.Warn("打洞超时", "elapsed", time.Since(punchStart).String(), "budget", budget.String())
 		return nil, errors.New("打洞超时")
 	}

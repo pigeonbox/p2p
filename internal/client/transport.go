@@ -131,14 +131,27 @@ func verifyFP(want string) func(rawCerts [][]byte, _ [][]*x509.Certificate) erro
 }
 
 // establishQUICBudget 在打洞成功的 UDP 套接字上建立 QUIC 传输。
-// sender 作为服务端监听;receiver 拨号 punch 验证过的对端地址。
-// 套接字交给 quic.Transport 后不得再用于原始读写(打洞循环须已停止)。
+// sender 作为服务端监听;receiver 拨号 punch 验证过的对端地址——直连路径
+// 必须传 tgt.addr/punchTarget 实测收到探针的地址(p2p#33 根因①:旧调用点传
+// peer.pickUDP 静态候选(UDPPublic→UDPMapped→UDPLAN 优先),可能选中从未验证
+// 可达的地址,与本契约背离);升级通道例外:按 offer 协商族取候选
+// (startUpgradeReceiver,族经信令对齐、无 punch 验证面)。
+// 套接字交给 quic.Transport 后不得再用于原始读写(打洞循环须已停止——
+// punchDual 返回前统一 quiesce 保证)。
+// ctx 为预算父上下文:取消即中止 Accept/Dial——发送侧双族监听竞速(listenFirst)
+// 的败者靠它及时收摊,不等满预算。
+// ⚠️ 所有失败路径都已 tr.Close():quic-go 对**用户 conn** 的 Close=停读循环
+// +读截止归零+不关 fd(升级/回退复用的前提,由 TestTransportCloseRestoresRawConn
+// 钉住上游行为;上游语义若变该用例先红,再改走同端口换新套接字)。
 // 返回控制流 + 数据流工厂(v3 多流)与清理函数。
 //
 // ⚠️ 预算必须由调用方**显式**给出,且发送侧与拨号侧**必须同源同值**
 // （见 Client.quicOpBudget 与 p2p#20）⇒ 这里**不再提供**带默认预算的包装,
 // 免得某侧悄悄拿到另一个硬编码值 ⇒ 两侧窗口不同步 ⇒ 拨号方在差值 Δ 内拨不通。
-func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate, peerFP string, remote *net.UDPAddr, isSender bool, budget time.Duration, log *slog.Logger) (*xport, error) {
+// （形态为包级函数变量：判据用例可按角色注入「快路径建立失败」来对称化
+// 两侧行为——quic-go 服务端 Accept 只收完成握手的连接、握手失败被吞
+// ⇒ 坏指纹构造不出「两侧同时落回退」。生产恒为下方实现。）
+var establishQUICBudget = func(ctx context.Context, sock *net.UDPConn, session []byte, cert tls.Certificate, peerFP string, remote *net.UDPAddr, isSender bool, budget time.Duration, log *slog.Logger) (*xport, error) {
 	// 阶段时间线（p2p#23 根因追踪面）：打洞→QUIC 交接此前零日志，CI 上
 	// 「no recent network activity」只能靠秒数反推；三条打点给出
 	// 角色/预算/握手耗时，flake 复现时日志即可定位 Δ 消耗环节。
@@ -197,7 +210,7 @@ func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate
 	// 不存在空等;错口令在首个 AEAD 帧解密处暴露。
 	// 接受/拨号预算与打洞预算同量级:打洞结果不对称时(一侧直连一侧
 	// 只能中继),快速失败让双方对齐到中继,避免 15s 级死等
-	opCtx, opCancel := context.WithTimeout(context.Background(), budget)
+	opCtx, opCancel := context.WithTimeout(ctx, budget)
 	defer opCancel()
 	var stream *quic.Stream
 	var qc *quic.Conn
@@ -211,7 +224,11 @@ func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate
 		qc, err = ln.Accept(opCtx)
 		if err != nil {
 			_ = tr.Close()
-			log.Warn("quic 接受连接失败(对端未在预算内拨入)", "waited", time.Since(started).String(), "err", err)
+			// 父 ctx 主动取消(双族监听竞速败者收摊)不是故障,不打 Warn 噪声;
+			// 真实超时/握手失败仍留时间线日志(CI flake 取证面)。
+			if ctx.Err() == nil {
+				log.Warn("quic 接受连接失败(对端未在预算内拨入)", "waited", time.Since(started).String(), "err", err)
+			}
 			return nil, fmt.Errorf("quic 接受连接: %w", err)
 		}
 		stream, err = qc.OpenStreamSync(opCtx)
@@ -224,7 +241,9 @@ func establishQUICBudget(sock *net.UDPConn, session []byte, cert tls.Certificate
 		qc, err = tr.Dial(opCtx, remote, tlsBase, qcfg)
 		if err != nil {
 			_ = tr.Close()
-			log.Warn("quic 拨号失败(对端未在预算内监听/无响应)", "waited", time.Since(started).String(), "err", err)
+			if ctx.Err() == nil {
+				log.Warn("quic 拨号失败(对端未在预算内监听/无响应)", "waited", time.Since(started).String(), "err", err)
+			}
 			return nil, fmt.Errorf("quic 拨号: %w", err)
 		}
 		stream, err = qc.AcceptStream(opCtx)
