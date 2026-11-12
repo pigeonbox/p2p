@@ -7,9 +7,9 @@ toolchain go1.26.11
 require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/klauspost/compress v1.20.3
-	github.com/oekit/concurrency v0.34.0
+	github.com/oekit/concurrency v0.34.1
 	github.com/oekit/core v0.14.2
-	github.com/oekit/network v0.10.1
+	github.com/oekit/network v0.10.2
 	github.com/oekit/pkg v0.46.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/quic-go/quic-go v0.65.0
