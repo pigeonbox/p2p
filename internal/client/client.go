@@ -374,6 +374,65 @@ func (c *Client) quicOpBudget() time.Duration {
 // 拨号侧会在监听就绪前超时(p2p#20 同款根因)。
 const upgradeOpBudget = 25 * time.Second
 
+// listenFirst 发送侧 QUIC 监听:单族直接听;双栈两族**竞速**。
+//
+// 根因(p2p#33 根因①,2026-11-12):双栈快打洞两侧独立竞速、胜出族无协商,
+// 发送侧胜 v4、接收侧胜 v6 时拨号族≠监听族 ⇒ 单族监听下另一族的拨入无人
+// 应答,QUIC 必等满 quicOpBudget(测试 50s/生产 9s)超时。两族各起一个监听
+// 后,对端拨到哪族哪边先握手成功;先成者胜,败者随 ctx 取消即刻收摊
+// (不关套接字——留给回退/升级/收尾)。套接字由 punchDual quiesce 保证
+// 打洞循环已停(transport.go:135 交接前提)。
+//
+// 预算必须与拨号侧同源(p2p#20)⇒ 实参显式写 c.quicOpBudget()
+// (quic_budget_guard_test 逐调用点锁形态)。
+func (c *Client) listenFirst(socks []*net.UDPConn, session []byte, cert tls.Certificate, peerFP string) (*xport, string, error) {
+	live := make([]*net.UDPConn, 0, 2)
+	seen := make(map[*net.UDPConn]bool, 2)
+	for _, s := range socks {
+		if s != nil && !seen[s] {
+			seen[s] = true
+			live = append(live, s)
+		}
+	}
+	if len(live) == 0 {
+		return nil, "", fmt.Errorf("quic 建立: 无可用 UDP 套接字")
+	}
+	if len(live) == 1 {
+		x, err := establishQUICBudget(context.Background(), live[0], session, cert, peerFP, nil, true, c.quicOpBudget(), c.log)
+		return x, famOf(live[0]), err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type res struct {
+		x   *xport
+		fam string
+		err error
+	}
+	ch := make(chan res, len(live))
+	for _, s := range live {
+		sock := s
+		async.GoSafeLabeled("quic-listen-race", func() {
+			x, err := establishQUICBudget(ctx, sock, session, cert, peerFP, nil, true, c.quicOpBudget(), c.log)
+			ch <- res{x: x, fam: famOf(sock), err: err}
+		})
+	}
+	// 先回先出:接收侧只拨一次(单族 punch 验证地址),至多一个监听收得到拨入
+	// ——任一监听出结果即定胜负。成功=直连成;失败=快路径已无对端可等,立即
+	// 回退,不等另一族空转到预算(那正是 50s 空转的另一半)。
+	r := <-ch
+	// 先显式取消、再把兄弟监听的结果**收干**才返回:保证本函数返回时没有任何
+	// 在途 Transport(tr.Close 已同步复位 conn),调用方可立即把套接字交回
+	// 回退长打洞/升级通道(p2p#33 交接卫生)。
+	cancel()
+	for i := 1; i < len(live); i++ {
+		<-ch
+	}
+	if r.err != nil {
+		return nil, "", r.err
+	}
+	return r.x, r.fam, nil
+}
+
 func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, session []byte, cert tls.Certificate, peer *candInfo, isSender bool, ch *channel) (*xport, string, error) {
 	k := wire.DeriveKey(session, "cand")
 	fast := c.opt.PunchBudget
@@ -383,27 +442,27 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 	tgt, punchErr := punchDual(sock4, sock6, peer, k, fast, mapped, c.log)
 
 	if punchErr == nil {
-		// 打洞胜出族交接前清读截止(2026-10-15 定长墙根因):punch 在 socket 上
-		// 留了 budget 期读截止,带截止交接给 QUIC 后,截止一到 quic-go 读循环
-		// 永远读超时——双侧传输在 (预算-打洞耗时) 秒后集体冻结,表现为恒定
-		// "定长墙"(68MB/83.5s 实为链路速度×打洞后剩余预算)。清零=QUIC 独占后无截止。
-		_ = tgt.sock.SetReadDeadline(time.Time{})
-		// 败族套接字即刻关闭:终止其上仍阻塞的 punch 读循环(其读截止到期前一直挂着)
-		if tgt.sock == sock4 {
-			_ = sock6.Close()
-		} else {
-			_ = sock4.Close()
-		}
-		remote := peer.pickUDP(famOf(tgt.sock))
+		// 交接前提(2026-10-15 定长墙根因 + p2p#33):punchDual 返回前已统一
+		// quiesce——打洞循环必停、读截止归零,无需再手清;败族套接字**不再关闭**
+		// (双族都要留给发送侧双族监听竞速/回退长打洞/升级通道)。
 		var x *xport
 		var derr error
+		var via string
 		if isSender {
-			x, derr = establishQUICBudget(tgt.sock, session, cert, peer.CertFP, nil, true, c.quicOpBudget(), c.log)
+			// 发送侧双族监听竞速:接收侧可能在另一族胜出(双栈错位,p2p#33 根因①),
+			// 单族监听下拨号族≠监听族 ⇒ QUIC 必等满预算超时。
+			var fam string
+			x, fam, derr = c.listenFirst([]*net.UDPConn{sock4, sock6}, session, cert, peer.CertFP)
+			via = "quic-direct(" + fam + ")"
 		} else {
-			x, derr = establishQUICBudget(tgt.sock, session, cert, peer.CertFP, remote, false, c.quicOpBudget(), c.log)
+			// 拨号目标 = **punch 验证过的对端地址**(p2p#33 根因①):旧实现传
+			// peer.pickUDP 静态候选,与 establishQUICBudget 文档背离且可能拨到
+			// 从未验证可达的地址。
+			x, derr = establishQUICBudget(context.Background(), tgt.sock, session, cert, peer.CertFP, tgt.addr, false, c.quicOpBudget(), c.log)
+			via = "quic-direct(" + famOf(tgt.sock) + ")"
 		}
 		if derr == nil {
-			return x, "quic-direct(" + famOf(tgt.sock) + ")", nil
+			return x, via, nil
 		}
 		c.log.Warn("快打洞成功但直连建立失败,落中继+后台升级", "err", derr)
 	}
@@ -422,33 +481,36 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 			fallReason = "仅直连模式"
 		}
 		c.log.Info(fallReason+",长打洞兜底", "budget", c.opt.PunchBudget.String())
+		// 回退长打洞的套接字前提(p2p#33 根因②):快路径若试过 QUIC,失败路径已
+		// tr.Close()——quic-go 对用户 conn 是「停读循环+读截止归零+不关 fd」
+		// (TestTransportCloseRestoresRawConn 钉版),叠加 punchDual 的 quiesce
+		// ⇒ 两族套接字可显式复用,不再「污染空转」;败族也从未被关(快路径已改)。
 		tgt2, err2 := punchDual(sock4, sock6, peer, k, c.opt.PunchBudget, mapped, c.log)
 		if err2 != nil {
 			return nil, "", fmt.Errorf("打洞失败且%s: %w", fallReason, err2)
 		}
-		// 同快路径:清读截止+关败族(定长墙同款根因)
-		_ = tgt2.sock.SetReadDeadline(time.Time{})
-		if tgt2.sock == sock4 {
-			_ = sock6.Close()
-		} else {
-			_ = sock4.Close()
-		}
 		var x *xport
 		var derr error
+		var via string
 		if isSender {
-			x, derr = establishQUICBudget(tgt2.sock, session, cert, peer.CertFP, nil, true, c.quicOpBudget(), c.log)
+			// 与快路径同款:双族监听竞速(回退段两侧同样各自竞速,错位依旧可能)。
+			var fam string
+			x, fam, derr = c.listenFirst([]*net.UDPConn{sock4, sock6}, session, cert, peer.CertFP)
+			via = "quic-direct(" + fam + ")"
 		} else {
 			// ⚠️ 拨号侧预算必须与发送侧**同值**(p2p#20):两侧的 QUIC 窗口各自从
 			// **自己**打洞结束那刻起算 ⇒ 打洞结束时刻相差 Δ 时,拨号方必须活过 Δ。
 			// 此前拨号侧固定 8s、发送侧 PunchBudget+5s ⇒ 不对称 ⇒ 拨号方常在
 			// 对侧就绪前就超时("quic 拨号: context deadline exceeded")。
-			x, derr = establishQUICBudget(tgt2.sock, session, cert, peer.CertFP, peer.pickUDP(famOf(tgt2.sock)), false, c.quicOpBudget(), c.log)
+			// 拨号目标=punch 验证过的 tgt2.addr(p2p#33 根因①,同快路径)。
+			x, derr = establishQUICBudget(context.Background(), tgt2.sock, session, cert, peer.CertFP, tgt2.addr, false, c.quicOpBudget(), c.log)
+			via = "quic-direct(" + famOf(tgt2.sock) + ")"
 		}
 		if derr != nil {
 			_ = tgt2.sock.Close()
 			return nil, "", fmt.Errorf("quic 建立: %w", derr)
 		}
-		return x, "quic-direct(" + famOf(tgt2.sock) + ")", nil
+		return x, via, nil
 	}
 
 	// 中继先行
@@ -509,7 +571,7 @@ func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.
 		// 后监听会让接收方拨号扑空,双侧互相等待超时)
 		dxCh := make(chan *xport, 1)
 		async.GoSafe(func() {
-			dx, err := establishQUICBudget(tgt.sock, session, cert, ownNew.CertFP, nil, true, upgradeOpBudget, c.log)
+			dx, err := establishQUICBudget(context.Background(), tgt.sock, session, cert, ownNew.CertFP, nil, true, upgradeOpBudget, c.log)
 			if err == nil {
 				dxCh <- dx
 			}
@@ -561,7 +623,7 @@ func (c *Client) startUpgradeReceiver(sw *xswap, relayX *xport, sock4, sock6 *ne
 		}
 		// 预算与监听侧**同值**(upgradeOpBudget):监听侧等补拨、拨号侧等监听,
 		// 不同步 ⇒ 拨号侧会在监听就绪前超时(p2p#20 同款根因)。
-		dx, derr := establishQUICBudget(sock, session, cert, peerNew.CertFP, remote, false, upgradeOpBudget, c.log)
+		dx, derr := establishQUICBudget(context.Background(), sock, session, cert, peerNew.CertFP, remote, false, upgradeOpBudget, c.log)
 		if derr != nil {
 			c.log.Info("升级拨号失败(留中继)", "err", derr)
 			return
