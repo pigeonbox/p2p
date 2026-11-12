@@ -337,6 +337,19 @@ func punch(sock *net.UDPConn, peer *candInfo, k [32]byte, budget time.Duration) 
 		return nil, errors.New("对端无可用候选")
 	}
 
+	// 入口**同步**发首个探针(p2p#33 关联根因,2026-11-12):发送循环首拍在
+	// entry+80ms,而本侧读循环可能在首拍前就收到对端探针而返回——对端若也是
+	// 「先收后发」的较晚入场者,两侧可能都只收不发:先入场侧等到预算耗尽也
+	// 收不到任何探针 ⇒ 单侧 fast punch 饿死失败(错位/回退链的另一入口,
+	// 与 CI「打洞失败(v4/v6 均未通)」同签名)。同步首发保证**每个 punch 至少
+	// 向对端暴露一次**,双方入场时刻任意错开都收敛;探针幂等(对端只解密判读),
+	// 多发无副作用,80ms 周期循环照旧作丢包容错。
+	if first, err := probe(); err == nil {
+		for _, tgt := range targets {
+			_, _ = sock.WriteToUDP(first, tgt)
+		}
+	}
+
 	stop := make(chan struct{})
 	var sendWG sync.WaitGroup
 	sendWG.Add(1)
