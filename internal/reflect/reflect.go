@@ -48,7 +48,17 @@ func Serve(ctx context.Context, conn *net.UDPConn, log *slog.Logger) {
 		n, raddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				continue
+				continue // 1s 读截止的周期性超时:轮询语义,不是故障
+			}
+			if ctx.Err() != nil {
+				return // 关机路径:ctx 取消是设计的退出方式,保持静默
+			}
+			// 非超时读错误(EMFILE/ENOBUFS/套接字损坏等):反射器一死,p2pd 进程
+			// 照常活着(HTTP/信令/中继全绿)但打洞前提(reflectOwn)全网失效、
+			// 直到重启才恢复 ⇒ 不留痕就成查不到原因的黑洞。对齐 relay.Serve
+			// 「异常退出必打日志」的口径(p2p#39)。
+			if log != nil {
+				log.Error("UDP 反射器异常退出(打洞前提失效,重启后恢复)", "err", err)
 			}
 			return
 		}

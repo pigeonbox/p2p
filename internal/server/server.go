@@ -84,11 +84,14 @@ func New(ctx context.Context, p Params) *Server {
 	var hub *signaling.Hub
 	if p.Config.Signaling.Enabled {
 		hub = signaling.NewHub(ctx, signaling.Config{
-			SessionTTL:         p.Config.Signaling.SessionTTL,
-			IdleTimeout:        p.Config.Signaling.IdleTimeout,
-			HelloTimeout:       p.Config.Signaling.HelloTimeout,
-			PingPeriod:         20 * time.Second,
-			WriteWait:          10 * time.Second,
+			SessionTTL:   p.Config.Signaling.SessionTTL,
+			IdleTimeout:  p.Config.Signaling.IdleTimeout,
+			HelloTimeout: p.Config.Signaling.HelloTimeout,
+			// p2p#38:从配置透传(此前字面量硬编码 ⇒ signaling.ping_period/
+			// write_wait 是死配置,改了等于没改);>0 与 ping<idle 由 config.validate
+			// 在启动期 fail-fast 兜底。
+			PingPeriod:         p.Config.Signaling.PingPeriod,
+			WriteWait:          p.Config.Signaling.WriteWait,
 			MaxFrameBytes:      p.Config.Signaling.MaxFrameBytes,
 			MaxSessionsPerNode: p.Config.Signaling.MaxSessionsPerNode,
 			MaxTotalSessions:   p.Config.Signaling.MaxTotalSessions,
