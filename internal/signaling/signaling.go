@@ -13,6 +13,7 @@ package signaling
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -73,6 +74,16 @@ type Hub struct {
 
 // NewHub 构造信令中心；ctx 结束时停止清扫协程（连接不强制断开，随进程退出）。
 func NewHub(ctx context.Context, cfg Config, reg *registry.Service, m Metrics) *Hub {
+	// 构造期 fail-fast（镜像 config.validate 的启动期口径，p2p#38 守卫的第二道）：
+	// 生产路径经 config.Load→validate 已拦，但 NewHub 是公开构造器——绕过 Load 的
+	// 程序化构造（测试/新调用方）漏填时，原会在首个连接的 pingPump 里以
+	// time.NewTicker(0) 的晦涩 panic 晚炸。这里把晚炸变成早炸+清晰信息
+	//（对齐本生态「非法入参当场暴露」：redisx.NewPeriodLimit 对 nil store 同款 panic）。
+	if cfg.PingPeriod <= 0 || cfg.WriteWait <= 0 || cfg.PingPeriod >= cfg.IdleTimeout {
+		panic(fmt.Sprintf(
+			"signaling: 非法 Config（PingPeriod=%v WriteWait=%v IdleTimeout=%v）：须 PingPeriod>0、WriteWait>0、PingPeriod<IdleTimeout——用 DefaultConfig() 起底再改字段",
+			cfg.PingPeriod, cfg.WriteWait, cfg.IdleTimeout))
+	}
 	if m == nil {
 		m = noopMetrics{}
 	}
