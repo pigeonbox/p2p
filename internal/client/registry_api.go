@@ -89,6 +89,15 @@ func (r *registryAPI) resolve(ctx context.Context, code string) (nodeID string, 
 	if err := r.do(ctx, http.MethodGet, "/v1/resolve/"+hash, nil, &out); err != nil {
 		return "", err
 	}
+	// 2xx + JSON 能解出来 ≠ 报文语义成立:反代/catch-all 网关常回 {} 或缺
+	// 字段。node_id 缺失/形态非法必须当失败,否则 Receive 的 HRW failover 链
+	// 被第一个「200 但没 node_id」的端点静默截断(err==nil 即认准,不顺延、
+	// 不进重试窗口),且 expectedPeer="" 把报文非法误报成身份核对失败(p2p#41)。
+	// 校验与身份模型同源(registry.ParseNodeID:node_id = Ed25519 公钥 hex),
+	// 归属 resolve ⇒ resolveRetry 重试与 Receive 顺延两条路都自动受益。
+	if _, err := registry.ParseNodeID(out.NodeID); err != nil {
+		return "", fmt.Errorf("解析响应缺少合法 node_id: %q: %w", out.NodeID, err)
+	}
 	return out.NodeID, nil
 }
 
