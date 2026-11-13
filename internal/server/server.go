@@ -259,12 +259,16 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	// per-hash 维度限流:同一 code_hash 的解析频率封顶(IP 池绕不过),
 	// 防对热点口令的选择明文枚举与定向阻断观测。正常取件(含 500ms 重试)
 	// 远低于该阈值。
-	if !s.resolveHashLim.Allow(strings.ToLower(r.PathValue("hash"))) {
+	//
+	// 限流键与业务键**同源归一**(registry.NormalizeHash 单源):路径参数的
+	// 空白变体必须折进同一桶,否则每个变体各拿一份 burst(p2p#37)。
+	hash := registry.NormalizeHash(r.PathValue("hash"))
+	if !s.resolveHashLim.Allow(hash) {
 		s.metrics.rateLimited.Inc()
 		writeErr(w, http.StatusTooManyRequests, errRateLimited)
 		return
 	}
-	a, node, err := s.svc.Resolve(r.Context(), r.PathValue("hash"))
+	a, node, err := s.svc.Resolve(r.Context(), hash)
 	if err != nil {
 		s.metrics.resolveTotal.WithLabelValues("miss").Inc()
 		s.writeErr(w, err)

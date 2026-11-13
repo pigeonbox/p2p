@@ -40,6 +40,16 @@ func CodeHash(code string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// NormalizeHash code_hash 归一(小写 + 去首尾空白)。
+//
+// 这是 code_hash 的**唯一归一入口**:业务查找(registry.Service.Resolve)与
+// 服务端 per-hash 限流键(internal/server handleResolve)必须共用本函数——
+// 两处口径一旦分叉,空白变体就能各自折成新键,绕过「IP 池绕不过」的枚举
+// 限流(p2p#37)。新增消费方一律调这里,勿自抄第二份。
+func NormalizeHash(codeHash string) string {
+	return strings.ToLower(strings.TrimSpace(codeHash))
+}
+
 // parseNodeID node_id hex → Ed25519 公钥。
 func parseNodeID(id string) (ed25519.PublicKey, error) {
 	raw, err := hex.DecodeString(id)

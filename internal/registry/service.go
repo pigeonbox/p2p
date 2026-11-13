@@ -371,7 +371,7 @@ func (s *Service) Announce(ctx context.Context, in AnnounceInput) (store.Announc
 // Resolve 解析口令路由。公告或其节点任一过期即视为不存在
 // (读路径即时判定,清扫滞后不影响正确性)。
 func (s *Service) Resolve(ctx context.Context, codeHash string) (store.Announce, store.Node, error) {
-	hash := strings.ToLower(strings.TrimSpace(codeHash))
+	hash := NormalizeHash(codeHash)
 	a, ok, err := s.p.Store.GetAnnounce(ctx, hash)
 	if err != nil {
 		return store.Announce{}, store.Node{}, fmt.Errorf("读公告: %w", err)
