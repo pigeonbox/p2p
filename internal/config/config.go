@@ -111,6 +111,11 @@ type Signaling struct {
 	IdleTimeout time.Duration
 	// HelloTimeout 接入后交 hello 的时限。env: PB_P2P_SIGNALING_HELLO_TIMEOUT
 	HelloTimeout time.Duration
+	// PingPeriod 服务端 ping 周期(须 < IdleTimeout,否则读截止先于首次 ping
+	// 触发 ⇒ 心跳永远来不及发,健康连接被空闲超时踢掉)。env: PB_P2P_SIGNALING_PING_PERIOD
+	PingPeriod time.Duration
+	// WriteWait 单次写/控制帧超时。env: PB_P2P_SIGNALING_WRITE_WAIT
+	WriteWait time.Duration
 	// MaxFrameBytes data 帧负载上限（字节）。env: PB_P2P_SIGNALING_MAX_FRAME_BYTES
 	MaxFrameBytes int
 	// MaxSessionsPerNode 单节点并发会话上限。env: PB_P2P_SIGNALING_MAX_PER_NODE
@@ -288,10 +293,15 @@ func Load(path string) (*Config, error) {
 			Password: v.GetString("admin.password"),
 		},
 		Signaling: Signaling{
-			Enabled:            v.GetBool("signaling.enabled"),
-			SessionTTL:         v.GetDuration("signaling.session_ttl"),
-			IdleTimeout:        v.GetDuration("signaling.idle_timeout"),
-			HelloTimeout:       v.GetDuration("signaling.hello_timeout"),
+			Enabled:      v.GetBool("signaling.enabled"),
+			SessionTTL:   v.GetDuration("signaling.session_ttl"),
+			IdleTimeout:  v.GetDuration("signaling.idle_timeout"),
+			HelloTimeout: v.GetDuration("signaling.hello_timeout"),
+			// 2026-11-13 修复(p2p#38):此前 defaults+knownKeys 登记了这两个键但
+			// 结构体无字段、Load 漏读 ⇒ 死配置(拼错键会告警、改这两个键零告警
+			// 且改了等于没改),server.New 另用字面量硬编码。
+			PingPeriod:         v.GetDuration("signaling.ping_period"),
+			WriteWait:          v.GetDuration("signaling.write_wait"),
 			MaxFrameBytes:      v.GetInt("signaling.max_frame_bytes"),
 			MaxSessionsPerNode: v.GetInt("signaling.max_sessions_per_node"),
 			MaxTotalSessions:   v.GetInt("signaling.max_total_sessions"),
@@ -382,6 +392,15 @@ func (c *Config) validate() error {
 		if c.Signaling.SessionTTL <= 0 || c.Signaling.IdleTimeout <= 0 || c.Signaling.HelloTimeout <= 0 {
 			return fmt.Errorf("signaling 时长参数非法: ttl=%s idle=%s hello=%s",
 				c.Signaling.SessionTTL, c.Signaling.IdleTimeout, c.Signaling.HelloTimeout)
+		}
+		// p2p#38:兑现 Config.PingPeriod 注释里已声明的不变量。此前 PingPeriod
+		// 不可配、validate 只查 IdleTimeout>0 ⇒ 运维把 idle_timeout 调到 ≤ ping
+		// 周期时 validate 放行、启动成功,但 readPump 的读截止先于 pingPump 首次
+		// ping 触发 ⇒ 所有信令连接必然被空闲超时踢掉(两端其实都健康)。
+		// >0 同查:接入配置后 time.NewTicker(0) 会 panic、写截止立即到期。
+		if c.Signaling.PingPeriod <= 0 || c.Signaling.WriteWait <= 0 || c.Signaling.PingPeriod >= c.Signaling.IdleTimeout {
+			return fmt.Errorf("signaling 时长参数非法: ping=%s write_wait=%s(须 ping>0、write_wait>0、ping<idle=%s)",
+				c.Signaling.PingPeriod, c.Signaling.WriteWait, c.Signaling.IdleTimeout)
 		}
 		if c.Signaling.MaxFrameBytes < 1024 || c.Signaling.MaxFrameBytes > 1<<20 {
 			return fmt.Errorf("signaling.max_frame_bytes 须在 [1KB,1MB],当前: %d", c.Signaling.MaxFrameBytes)

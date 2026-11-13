@@ -135,14 +135,26 @@ func (s *session) put(p *peer) {
 	}
 }
 
-func (s *session) remove(p *peer) {
+// detach 从会话摘除 p,并在**同一临界区**返回「p 离开瞬间」的同侪。
+//
+// 摘除与取同侪必须原子(p2p#40 TOCTOU):leave 若先 remove 再 other,两次
+// 调用之间可有并发 join 补位——other 读到的是「补位后的新对端」,会把
+// peer_left 发给刚配对成功的第三方(它从未与 p 配对),而 p 真正的同侪漏收
+// peer_left 只能干等自己的 recv 超时。session.mu 每次调用各自上锁,跨两次
+// 调用没有原子性 ⇒ 把两次操作收进一个临界区:join 的 full/put、其它 peer
+// 的 detach 全走同一把锁,补位与并发摘除都不可能插入其间。
+func (s *session) detach(p *peer) *peer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := range s.peers {
-		if s.peers[i] == p {
+	var other *peer
+	for i, q := range s.peers {
+		if q == p {
 			s.peers[i] = nil
+		} else if q != nil {
+			other = q
 		}
 	}
+	return other
 }
 
 func (s *session) snapshot() [2]*peer {
@@ -220,7 +232,10 @@ func (h *Hub) join(hash string, p *peer) (JoinOutcome, *session, error) {
 // 会话最终回收由 janitor 按 SessionTTL 兜底；对端若为旧客户端，收到
 // peer_left 自行退出时会走同一路径清理空会话，语义收敛不变。
 func (h *Hub) leave(sess *session, p *peer) {
-	sess.remove(p)
+	// 摘除与取同侪在 detach 的同一临界区完成(p2p#40):之后的并发 join
+	// 改不动这个快照 ⇒ 刚补位配对的新对端不会被误发 peer_left,漏通知的
+	// 也不会再是 p 的真同侪。
+	other := sess.detach(p)
 
 	h.mu.Lock()
 	empty := true
@@ -238,11 +253,29 @@ func (h *Hub) leave(sess *session, p *peer) {
 	}
 	h.mu.Unlock()
 
-	if other := sess.other(p); other != nil {
+	callLeaveAfterDetach() // 测试缝:p2p#40 判据注入点(生产恒空)
+
+	if other != nil {
 		enqueue(other, serverFrame{Type: "peer_left"})
 		// 不再 closePeer(other)：对端保留在会话内等补位
 	}
 	closePeer(p)
+}
+
+// leaveAfterDetach 测试缝(p2p#40):peer 从会话摘除之后、向同侪发 peer_left
+// 之前触发。生产恒为空实现;测试在此同步插入第三方 join,构造「摘除与通知
+// 之间补位」的 TOCTOU 窗口(负对照:leave 退回「先 remove 后取同侪」即转红)。
+// 读写经 seamMu 互斥:测试改写与残留 readPump 的触发可能并发(-race)。
+var (
+	seamMu           sync.Mutex
+	leaveAfterDetach = func() {}
+)
+
+func callLeaveAfterDetach() {
+	seamMu.Lock()
+	f := leaveAfterDetach
+	seamMu.Unlock()
+	f()
 }
 
 // ---- 清扫 ----

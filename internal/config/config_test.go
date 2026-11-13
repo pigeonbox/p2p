@@ -110,3 +110,72 @@ func TestRelayCapacityValidation(t *testing.T) {
 		t.Fatalf("合法容量应通过: %v", err)
 	}
 }
+
+// p2p#38 死配置判据(与 TestLoadCapacityKeysReachStructs 同形状):
+// signaling.ping_period / write_wait 此前 defaults+knownKeys 都有,但结构体
+// 无字段、Load 漏读 ⇒ 拼错键会告警、改这两个键却零告警且改了等于没改。
+func TestLoadSignalingPingWriteWaitReachStructs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := "signaling:\n  ping_period: 3s\n  write_wait: 77s\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Signaling.PingPeriod != 3*time.Second || c.Signaling.WriteWait != 77*time.Second {
+		t.Fatalf("ping/write_wait 未生效(死配置?): ping=%s write_wait=%s",
+			c.Signaling.PingPeriod, c.Signaling.WriteWait)
+	}
+	if len(c.Warnings) != 0 {
+		t.Fatalf("合法键不应产生告警: %v", c.Warnings)
+	}
+}
+
+// p2p#38 不变量判据:启动期必须拒绝(PingPeriod ≥ IdleTimeout 会让读截止先于
+// 首次 ping 触发 ⇒ 心跳永远来不及发,健康连接必然被空闲超时踢掉),不许静默放行。
+func TestSignalingPingPeriodBelowIdleTimeoutRejected(t *testing.T) {
+	defaults, err := Load("") // 20s/10s/idle 120s:存量默认必须仍通过
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := defaults.validate(); err != nil {
+		t.Fatalf("默认参数必须通过校验: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+		wantOK bool
+	}{
+		{"ping 等于 idle(违例)", func(c *Config) { c.Signaling.PingPeriod = c.Signaling.IdleTimeout }, false},
+		{"ping 大于 idle(违例)", func(c *Config) { c.Signaling.PingPeriod = c.Signaling.IdleTimeout + time.Second }, false},
+		{"ping 为 0(Ticker panic 面)", func(c *Config) { c.Signaling.PingPeriod = 0 }, false},
+		{"ping 为负(违例)", func(c *Config) { c.Signaling.PingPeriod = -time.Second }, false},
+		{"write_wait 为 0(写截止立即到期)", func(c *Config) { c.Signaling.WriteWait = 0 }, false},
+		{"ping 小于 idle(合法)", func(c *Config) { c.Signaling.PingPeriod = c.Signaling.IdleTimeout - time.Second }, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(c)
+			err = c.validate()
+			if tc.wantOK && err != nil {
+				t.Fatalf("合法参数应通过: %v", err)
+			}
+			if !tc.wantOK {
+				if err == nil {
+					t.Fatal("违例参数必须被启动期拒绝(而非静默生效)")
+				}
+				if !strings.Contains(err.Error(), "signaling 时长参数非法") {
+					t.Fatalf("报错应与其他 signaling 校验同款措辞,得到: %v", err)
+				}
+			}
+		})
+	}
+}

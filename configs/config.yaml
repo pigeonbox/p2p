@@ -46,6 +46,10 @@ signaling:
   session_ttl: 10m      # 会话最长生命周期(含等待配对)
   idle_timeout: 2m      # 连接空闲上限(pong 与数据帧均续期)
   hello_timeout: 10s    # 接入后交 hello 的时限
+  # 服务端 ping 周期与单次写超时。ping_period 必须 < idle_timeout,否则读截止
+  # 先于首次 ping 触发 ⇒ 心跳来不及发,健康连接被空闲超时踢掉(启动期校验,违例拒启)。
+  ping_period: 20s      # 服务端 ping 周期(须 < idle_timeout)
+  write_wait: 10s       # 单次写/控制帧超时
   max_frame_bytes: 16384
   max_sessions_per_node: 8
   max_total_sessions: 1024
