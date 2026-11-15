@@ -329,7 +329,10 @@
     // 立即从地址栏抹掉,此后所有 API 以 X-P2PCWEB 头携带,令牌不再进
     // 任何请求 URL(反代/浏览器历史等日志面)。
     let T = sessionStorage.getItem('p2pcweb-t') || '';
-    const qsT = new URLSearchParams(location.search).get('t');
+    // fnos#212 协同：同时接受 fragment 形态 #t=（/beam 302 改用它——fragment
+    // 不进服务端/代理日志；旧 ?t= 形态保留兼容旧 fnOS 包）。
+    const qsT = new URLSearchParams(location.search).get('t')
+      || new URLSearchParams(location.hash.slice(1)).get('t');
     if (qsT) {
       T = qsT;
       sessionStorage.setItem('p2pcweb-t', T);
