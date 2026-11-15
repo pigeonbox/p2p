@@ -161,6 +161,7 @@ make smoke                          # 冒烟:注册/公告/解析/信令/直传�
 | `POST /v1/pair/approve` | 亮码方裁决 `{node_id, code, decision(accept/deny), claimer, ts, sig}`；deny 即烧码 |
 | `POST /v1/pair/requests` | 亮码方拉取活跃会话与待确认请求 `{sessions: [{code, expires_in, requests: [{node_id, name}]}]}` |
 | `WS /v1/channel/{hash}` | **信令信道**：同 hash 双方配对，转发不透明握手帧（见下节契约） |
+| `POST /v1/telemetry/session` | **会话建立遥测（p2p#51）**：客户端上报 `{node_id, kind, path, reason, ts, sig}` → p2pd 落 `p2p_session_established_total{path}`/`p2p_session_failed_total{reason}`/`p2p_relay_fallback_total{reason}`；kind/path/reason 为**枚举白名单**（集合外 400，脱敏：不收自由文本/地址），签名负载 `node_id|kind|path|reason|ts` |
 | `GET /health` · `GET /metrics` | 健康检查（显式 GET）/ Prometheus 指标 |
 | `GET/DELETE /v1/admin/*` | 统计/列表/强制下线（Bearer 管理口令） |
 

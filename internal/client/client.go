@@ -19,6 +19,7 @@ import (
 
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/concurrency/retry"
+	"github.com/pigeonbox/p2p/internal/registry"
 	"github.com/pigeonbox/p2p/internal/wire"
 )
 
@@ -433,7 +434,19 @@ func (c *Client) listenFirst(socks []*net.UDPConn, session []byte, cert tls.Cert
 	return r.x, r.fam, nil
 }
 
-func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, session []byte, cert tls.Certificate, peer *candInfo, isSender bool, ch *channel) (*xport, string, error) {
+// regBase 为本次会话所用注册中心基址(遥测上报目标;空=不上报,p2p#51)。
+func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, session []byte, cert tls.Certificate, peer *candInfo, isSender bool, ch *channel, regBase string) (x *xport, via string, err error) {
+	// p2p#51 直连率遥测:结果分类在各分支显式赋值,return 后统一 best-effort
+	// 上报(异步+短超时,见 telemetry.go)。未分类的返回不上报——宁缺勿错标。
+	var telePath, teleReason string
+	defer func() {
+		switch {
+		case err != nil && teleReason != "":
+			c.reportSession(regBase, registry.TelemetryFailed, "", teleReason)
+		case err == nil && telePath != "":
+			c.reportSession(regBase, registry.TelemetryEstablished, telePath, "")
+		}
+	}()
 	k := wire.DeriveKey(session, "cand")
 	fast := c.opt.PunchBudget
 	if fast > 1500*time.Millisecond {
@@ -462,6 +475,7 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 			via = "quic-direct(" + famOf(tgt.sock) + ")"
 		}
 		if derr == nil {
+			telePath = "punch"
 			return x, via, nil
 		}
 		c.log.Warn("快打洞成功但直连建立失败,落中继+后台升级", "err", derr)
@@ -487,6 +501,7 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 		// ⇒ 两族套接字可显式复用,不再「污染空转」;败族也从未被关(快路径已改)。
 		tgt2, err2 := punchDual(sock4, sock6, peer, k, c.opt.PunchBudget, mapped, c.log)
 		if err2 != nil {
+			teleReason = "punch_failed"
 			return nil, "", fmt.Errorf("打洞失败且%s: %w", fallReason, err2)
 		}
 		var x *xport
@@ -508,16 +523,28 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 		}
 		if derr != nil {
 			_ = tgt2.sock.Close()
+			teleReason = "quic_failed"
 			return nil, "", fmt.Errorf("quic 建立: %w", derr)
 		}
+		telePath = "fallback"
 		return x, via, nil
 	}
 
-	// 中继先行
+	// 中继先行(p2p#51):走到这里=回退决策已定,打点+一行结构化日志——
+	// 回退此前是黑盒,现在 metrics(p2p_relay_fallback_total)与日志双可查。
+	fbReason := "punch_failed"
+	if punchErr == nil {
+		fbReason = "direct_failed"
+	}
+	c.log.Info("会话回退中继", "reason", fbReason)
+	c.reportSession(regBase, registry.TelemetryRelayFallback, "", fbReason)
+
 	x, rerr := establishRelay(session, c.relayAddr(), relayToken(session), isSender)
 	if rerr != nil {
+		teleReason = "relay_failed"
 		return nil, "", fmt.Errorf("中继接入失败: %w", rerr)
 	}
+	telePath = "relay"
 	if c.opt.DisablePunch || ch == nil {
 		return x, "relay", nil
 	}
@@ -699,7 +726,7 @@ func (c *Client) sendChannel(paths []string, code string) (string, error) {
 	}
 
 	sw := &xswap{}
-	x, via, err := c.establish(sw, sock4, sock6, mapped, session, cert, peer, true, ch)
+	x, via, err := c.establish(sw, sock4, sock6, mapped, session, cert, peer, true, ch, c.opt.Registry)
 	if err != nil {
 		_ = sock4.Close()
 		_ = sock6.Close()
@@ -780,7 +807,7 @@ func (c *Client) receiveFrom(regBase, code, dir, expectedPeer string) ([]string,
 	}
 
 	sw := &xswap{}
-	x, via, err := c.establish(sw, sock4, sock6, mapped, session, cert, peer, false, ch)
+	x, via, err := c.establish(sw, sock4, sock6, mapped, session, cert, peer, false, ch, regBase)
 	if err != nil {
 		_ = sock4.Close()
 		_ = sock6.Close()

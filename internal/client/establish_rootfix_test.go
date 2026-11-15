@@ -134,7 +134,7 @@ func establishConcurrent(t *testing.T, session []byte, a, b *establishSide) (est
 	}
 	ch := make(chan named, 2)
 	run := func(s *establishSide, isSender bool) {
-		x, via, err := s.c.establish(s.sw, s.sock4, s.sock6, "", session, s.cert, s.peer, isSender, nil)
+		x, via, err := s.c.establish(s.sw, s.sock4, s.sock6, "", session, s.cert, s.peer, isSender, nil, "")
 		if isSender && err == nil && x != nil {
 			// 等价于 sendAll 紧接 establish 后写 MsgMeta（transfer.go:342）：
 			// quic-go 只在首字节到达时才向对端宣告流打开 ⇒ 判据驱动不写的话，
