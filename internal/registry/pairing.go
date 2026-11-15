@@ -19,8 +19,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/oekit/concurrency/async"
+	"github.com/oekit/concurrency/ratelimit"
 	"github.com/pigeonbox/p2p/internal/store"
 )
 
@@ -151,7 +153,20 @@ type PairingService struct {
 
 	mu       sync.Mutex
 	sessions map[string]*pairSession // code → session（仅 active/claimed/granted 存续）
+
+	// claimLim claim 新尝试的 per-node 令牌桶（p2p#48）：错码/占位/冲突等
+	// 非轮询尝试按身份计费——IP 池枚举须同步准备等量有效身份；同 claim_id
+	// 轮询豁免（合法敲门方 2s 定间隔轮询）。键为 node_id，空闲键自动回收。
+	claimLim *ratelimit.KeyedLimiter
 }
+
+// claim 新尝试的节点维度配额参数（p2p#48）。burst=10 与
+// pairing_test.go 的 TestPairClaimPerNodeAttemptQuota 对齐，改须同步。
+const (
+	claimNodeRate    = 0.2              // 12 次/分钟/身份：错码重试余量充足，枚举须按身份摊
+	claimNodeBurst   = 10               // 突发 10 次新尝试
+	claimNodeIdleTTL = 30 * time.Minute // 空闲键回收；TokenBucket 无窗口语义，回收即余量清零只放松不误伤
+)
 
 // NewPairingService 构造（ctx 用于 GC 协程生命周期；nodes 为租约校验来源）。
 func NewPairingService(ctx context.Context, cfg PairingConfig, nodes nodeLeaser) *PairingService {
@@ -160,8 +175,14 @@ func NewPairingService(ctx context.Context, cfg PairingConfig, nodes nodeLeaser)
 		now:      time.Now,
 		nodes:    nodes,
 		sessions: make(map[string]*pairSession),
+		claimLim: ratelimit.NewKeyedLimiter(func() ratelimit.Limiter {
+			return ratelimit.NewTokenBucket(claimNodeRate, claimNodeBurst)
+		}, claimNodeIdleTTL),
 	}
-	async.GoSafeLabeled("pairing-janitor", func() { s.janitor(ctx) })
+	async.GoSafeLabeled("pairing-janitor", func() {
+		defer s.claimLim.Close() // ctx 结束时停掉限流键清扫协程（同 server 侧口径）
+		s.janitor(ctx)
+	})
 	return s
 }
 
@@ -271,6 +292,13 @@ func (s *PairingService) Claim(ctx context.Context, in PairClaimInput) (PairClai
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.sessions[in.Code]
+	// p2p#48 节点维度配额：错码/占位/冲突等新尝试按身份计费，把枚举成本从
+	// 「IP 池大小」拉回「需要多少个有效身份」；同 claim_id 轮询（pending/
+	// granted 兑换）豁免——合法敲门方 2s 定间隔轮询，额度只咬枚举不咬等待。
+	poll := ok && sess.state != pairActive && sess.claimID == in.ClaimID && !now.After(sess.expiresAt)
+	if !poll && !s.claimLim.Allow(in.NodeID) {
+		return PairClaimResult{}, fmt.Errorf("%w: claim 尝试超限,稍后重试", ErrQuotaExceeded)
+	}
 	if !ok {
 		return PairClaimResult{}, fmt.Errorf("%w: 配对码不存在", ErrNotFound)
 	}
@@ -376,11 +404,35 @@ func (s *PairingService) Requests(ctx context.Context, in PairRequestsInput) ([]
 			Requests:  []PairRequestView{},
 		}
 		if sess.state == pairClaimed {
-			view.Requests = append(view.Requests, PairRequestView{NodeID: sess.claimer, Name: sess.claimerName})
+			view.Requests = append(view.Requests, PairRequestView{NodeID: sess.claimer, Name: sanitizeDisplayName(sess.claimerName)})
 		}
 		out = append(out, view)
 	}
 	return out, nil
+}
+
+// sanitizeDisplayName 待确认请求展示名消毒（p2p#48）：name 是注册时自选
+// 显示名，签名只证明「该 key 说过这句话」，不背书真实性——展示面至少要保证
+// 名字本身不被不可见字符利用（RLO 可把后缀倒排成可信域名样式、零宽可拼接
+// 伪名）。剥 C0/C1 控制符与 Cf 格式字符（BiDi 覆写/零宽/BOM/word joiner…），
+// 保留 emoji（含 ZWJ 连接序列）与全部正文；非法 UTF-8 换 U+FFFD。
+func sanitizeDisplayName(s string) string {
+	if s == "" {
+		return ""
+	}
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unicode.IsControl(r) { // C0/C1 控制符
+			continue
+		}
+		if unicode.Is(unicode.Cf, r) && r != '\u200c' && r != '\u200d' { // Cf 除 ZWNJ/ZWJ（emoji 序列/波斯文等合法用途）
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // newCodeLocked 生成全局唯一配对码（crypto/rand 十进制；碰撞重试有界，

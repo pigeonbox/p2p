@@ -67,7 +67,8 @@ type Server struct {
 	// resolveHashLim per-hash 维度限流:per-IP 限不住 IP 池对热点 code_hash
 	// 的选择明文枚举/定向阻断观测,双键叠加(IP 10x, hash 1x)。
 	resolveHashLim *ratelimit.KeyedLimiter
-	// pairClaimLim 配对 claim per-IP 限流(≈30/min):错码不可归因到会话,
+	// pairClaimLim 配对 claim per-IP 限流(≈30/min):错码不可归因到会话(p2p#48
+	// 后与 registry.Claim 的 per-node 配额双层并守,IP 池枚举不再只靠本层),
 	// per-IP 是 4 位码枚举的主防线。
 	pairClaimLim *ratelimit.KeyedLimiter
 }
@@ -112,7 +113,7 @@ func New(ctx context.Context, p Params) *Server {
 		writeLim:       newKeyedLimiter(ctx, 2, 120),  // 写路径: 平均 2/s 突发 120
 		adminLim:       newKeyedLimiter(ctx, 10, 60),  // 管理端宽松
 		resolveHashLim: newKeyedLimiter(ctx, 10, 60),  // 单 hash: 平均 10/s(正常取件重试 2/s×多接收方余量)
-		pairClaimLim:   newKeyedLimiter(ctx, 0.5, 30), // 配对 claim: ≈30/min/IP(枚举主防线)
+		pairClaimLim:   newKeyedLimiter(ctx, 0.5, 30), // 配对 claim: ≈30/min/IP(per-IP 层,per-node 层在 registry)
 	}
 }
 
