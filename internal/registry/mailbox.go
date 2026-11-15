@@ -34,11 +34,24 @@ type SealedEntry struct {
 	TS    int64  `json:"ts"`    // 服务端到达 unix 秒(TTL 基准)
 }
 
-// MailboxInput 投递请求体。
+// MailboxInput 投递请求体。TS/Sig 为调用方身份(p2p#45):发端以自身
+// 私钥对 BuildPayload(from,to_node,ts,nonce) 签名——信箱此前是唯一没有
+// 调用方约束的写面,匿名可灌箱阻断/抢收销毁目标节点的密封邀请。
 type MailboxInput struct {
 	From  string `json:"from"`
 	Nonce string `json:"nonce"`
 	Boxed string `json:"boxed"`
+	TS    int64  `json:"ts"`
+	Sig   string `json:"sig"`
+}
+
+// PopAuth 弹出请求的调用方身份(p2p#45):收端以目标节点私钥对
+// BuildPayload(to_node,ts,nonce) 签名——取后即删,仅本人可弹,
+// 防止观察者重放抢收销毁投递通路。GET 无请求体,由 handler 解析 query。
+type PopAuth struct {
+	Nonce string
+	TS    int64
+	Sig   string
 }
 
 // errInvalidf / errQuotaf 哨兵错误包装(server 层按 errors.Is 映射状态码)。
@@ -64,11 +77,9 @@ func (m *nodeMailbox) now() time.Time {
 	return time.Now()
 }
 
-// post 校验后投递(满箱拒绝;TTL 到期即不可取)。
+// post 入箱(满箱拒绝;TTL 到期即不可取)。形态与调用方鉴权已由
+// Service.MailboxPost 在此之前完成(validateSealed → 查活 → 验签)。
 func (m *nodeMailbox) post(to string, in MailboxInput) error {
-	if err := validateSealed(in); err != nil {
-		return err
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.boxes == nil {

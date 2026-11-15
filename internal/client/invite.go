@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -72,18 +73,26 @@ func (r *registryAPI) directory(ctx context.Context) ([]registry.DirectoryEntry,
 	return out.Nodes, nil
 }
 
-// mailboxPost 密封邀请投递。
-func (r *registryAPI) mailboxPost(ctx context.Context, to, from, nonce, boxed string) error {
-	body := map[string]any{"from": from, "nonce": nonce, "boxed": boxed}
+// mailboxPost 密封邀请投递。p2p#45:发端对 from|to_node|ts|nonce 签名
+// (服务端拒匿名/伪造)。
+func (r *registryAPI) mailboxPost(ctx context.Context, id *nodeIdentity, to, nonce, boxed string) error {
+	ts := time.Now().Unix()
+	body := map[string]any{"from": id.id, "nonce": nonce, "boxed": boxed, "ts": ts}
+	body["sig"] = id.sign(registry.BuildPayload(id.id, to, fmt.Sprint(ts), nonce))
 	return r.do(ctx, "POST", "/v1/mailbox/"+to, body, nil)
 }
 
-// mailboxPop 弹出全部密封条目(取后即删)。
-func (r *registryAPI) mailboxPop(ctx context.Context, to string) ([]registry.SealedEntry, error) {
+// mailboxPop 弹出全部密封条目(取后即删)。p2p#45:GET 无请求体,
+// 收端对 to_node|ts|nonce 签名走 query——仅目标节点私钥持有者可弹。
+func (r *registryAPI) mailboxPop(ctx context.Context, id *nodeIdentity, to string) ([]registry.SealedEntry, error) {
+	ts := time.Now().Unix()
+	nonce := "pop-" + fmt.Sprint(time.Now().UnixNano())
+	sig := id.sign(registry.BuildPayload(to, fmt.Sprint(ts), nonce))
+	q := url.Values{"ts": {fmt.Sprint(ts)}, "nonce": {nonce}, "sig": {sig}}
 	var out struct {
 		Entries []registry.SealedEntry `json:"entries"`
 	}
-	if err := r.do(ctx, "GET", "/v1/mailbox/"+to, nil, &out); err != nil {
+	if err := r.do(ctx, "GET", "/v1/mailbox/"+to+"?"+q.Encode(), nil, &out); err != nil {
 		return nil, err
 	}
 	return out.Entries, nil
@@ -150,7 +159,7 @@ func SendInvite(opt Options, code, toNode, fromName, note string) error {
 	if err != nil {
 		return fmt.Errorf("邀请密封失败: %w", err)
 	}
-	if err := reg.mailboxPost(ctx, toNode, id.id, nonceB64, boxedB64); err != nil {
+	if err := reg.mailboxPost(ctx, id, toNode, nonceB64, boxedB64); err != nil {
 		return fmt.Errorf("邀请投递失败: %w", err)
 	}
 	return nil
@@ -215,7 +224,7 @@ func RunMailbox(opt MailboxOptions, emit InviteSink) error {
 		if err := reg.registerPresence(cctx, id, name, mailboxLease, opt.Discoverable); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠ 节点注册失败(下轮重试): %v\n", err)
 		}
-		entries, err := reg.mailboxPop(cctx, id.id)
+		entries, err := reg.mailboxPop(cctx, id, id.id)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠ 信箱取件失败(下轮重试): %v\n", err)
 		}

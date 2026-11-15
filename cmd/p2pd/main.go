@@ -148,11 +148,14 @@ func main() {
 		// GoSafeLabeled:中继 panic 走全局 slog handler 带标签(注册面仍存活,可诊断不丢栈)
 		async.GoSafeLabeled("p2pd-relay", func() {
 			p := relayPkg.Params{
-				BytesPerSec:    cfg.Relay.MbpsPerChannel * 1_000_000 / 8,
-				MaxWaiting:     cfg.Relay.MaxWaiting,
-				MaxConnsPerIP:  cfg.Relay.MaxConnsPerIP,
-				WaitingTimeout: cfg.Relay.WaitingTimeout,
-				Log:            logger,
+				BytesPerSec:        cfg.Relay.MbpsPerChannel * 1_000_000 / 8,
+				MaxWaiting:         cfg.Relay.MaxWaiting,
+				MaxConnsPerIP:      cfg.Relay.MaxConnsPerIP,
+				WaitingTimeout:     cfg.Relay.WaitingTimeout,
+				IdleTimeout:        cfg.Relay.IdleTimeout,
+				MaxChannelLifetime: cfg.Relay.MaxChannelLifetime,
+				MaxActiveChannels:  cfg.Relay.MaxActiveChannels,
+				Log:                logger,
 			}
 			if err := relayPkg.Serve(ctx, ln, p); err != nil {
 				logger.Error("中继异常退出", "err", err)

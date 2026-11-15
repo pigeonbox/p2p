@@ -2,6 +2,7 @@ package signaling
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -134,8 +135,16 @@ func (h *Hub) handle(w http.ResponseWriter, r *http.Request) {
 		deny(conn, closeDenied, "节点未注册或租约已过期")
 		return
 	}
+	// p2p#47:一次性凭据去重——同一 (node_id,code_hash,ts) 只接受一次。
+	// 放在验签+时间窗+租约之后:无效身份不污染去重表。明文链路上观察到的
+	// hello 帧在 ±MaxClockSkew 窗口内重放会以受害者身份占槽(真身接入即
+	// 4002 busy),这里按 ts 去重直接拒(4003)。帧格式不动。
+	if !h.markHello(hf.NodeID, hash, hf.TS, h.now()) {
+		deny(conn, closeDenied, "接入凭据已使用(重放拒绝)")
+		return
+	}
 
-	p := &peer{nodeID: hf.NodeID, conn: conn, writeWait: h.cfg.WriteWait}
+	p := &peer{nodeID: hf.NodeID, conn: conn, writeWait: h.cfg.WriteWait, ip: hostOf(r.RemoteAddr)}
 	// 出站管道在 peer 进入会话**之前**就建好。
 	//
 	// 顺序很重要：peer 一旦进了 session，janitor 与 broadcast 就可能从别的
@@ -149,6 +158,7 @@ func (h *Hub) handle(w http.ResponseWriter, r *http.Request) {
 
 	outcome, sess, jerr := h.join(hash, p)
 	if jerr != nil {
+		h.rollbackHello(hf.NodeID, hash, hf.TS) // p2p#47:未准入不消耗凭据
 		h.metrics.SignalingJoin("busy")
 		// 顺序要紧：**先写协议要求的关闭码，再收工出站管道**。
 		//
@@ -186,6 +196,14 @@ func (h *Hub) handle(w http.ResponseWriter, r *http.Request) {
 	// 所以它不必与帧写出争那把「唯一写者」的锁。
 	async.GoSafeLabeled("signaling-ping", func() { h.pingPump(p) })
 	async.GoSafeLabeled("signaling-read", func() { h.readPump(sess, p) })
+}
+
+// hostOf 从 remote addr 提取 IP(去端口;解析失败回退整串)。
+func hostOf(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
 }
 
 func deny(conn *websocket.Conn, code int, msg string) {

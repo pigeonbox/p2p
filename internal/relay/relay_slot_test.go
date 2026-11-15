@@ -31,6 +31,11 @@ func TestHandle_WaitingKeepsPerIPSlot(t *testing.T) {
 		maxWaiting:     1024,
 		maxConnsPerIP:  16,
 		waitingTimeout: time.Minute,
+		// p2p#49 新字段:白盒直构 server 须显式给治理默认值
+		// (maxActive=0 会拒绝一切配对,idle/lifetime=0 会让管道立即超时)
+		idleTimeout: time.Minute,
+		maxLifetime: time.Hour,
+		maxActive:   1024,
 	}
 
 	var clients []net.Conn
@@ -84,6 +89,9 @@ func TestHandle_PairingReleasesBothSlots(t *testing.T) {
 		maxWaiting:     1024,
 		maxConnsPerIP:  16,
 		waitingTimeout: time.Minute,
+		idleTimeout:    time.Minute, // p2p#49:同上,直构须给默认值
+		maxLifetime:    time.Hour,
+		maxActive:      1024,
 	}
 
 	token := fmt.Sprintf("%064x", 42)

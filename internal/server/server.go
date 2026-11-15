@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,6 +96,8 @@ func New(ctx context.Context, p Params) *Server {
 			MaxFrameBytes:      p.Config.Signaling.MaxFrameBytes,
 			MaxSessionsPerNode: p.Config.Signaling.MaxSessionsPerNode,
 			MaxTotalSessions:   p.Config.Signaling.MaxTotalSessions,
+			MaxUnpairedPerIP:   p.Config.Signaling.MaxUnpairedPerIP,
+			UnpairedTTL:        p.Config.Signaling.UnpairedTTL,
 		}, p.Service, m)
 	}
 	return &Server{
@@ -305,8 +308,17 @@ func (s *Server) handleMailboxPost(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMailboxPop 弹出全部密封条目(取后即删;窃取=拒绝服务非泄密)。
+// p2p#45:GET 无请求体,调用方身份走 query(ts/nonce/sig,收端对
+// to_node|ts|nonce 签名)——仅目标节点私钥持有者可弹。
 func (s *Server) handleMailboxPop(w http.ResponseWriter, r *http.Request) {
-	entries, err := s.svc.MailboxPop(r.Context(), r.PathValue("to_node"))
+	q := r.URL.Query()
+	ts, err := strconv.ParseInt(q.Get("ts"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%w: ts 缺失或非法", registry.ErrInvalidRequest))
+		return
+	}
+	auth := registry.PopAuth{Nonce: q.Get("nonce"), TS: ts, Sig: q.Get("sig")}
+	entries, err := s.svc.MailboxPop(r.Context(), r.PathValue("to_node"), auth)
 	if err != nil {
 		s.writeErr(w, err)
 		return

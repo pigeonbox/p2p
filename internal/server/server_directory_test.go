@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -94,16 +95,25 @@ func TestMailboxEndpointsRoundtrip(t *testing.T) {
 		t.Fatalf("注册失败: %d", resp.StatusCode)
 	}
 
-	const fromHex = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	// 投递(纯密文,服务端不验内容)
+	// 发端节点(独立于收端;签名即身份,无需注册)
+	sender := newNodeKey(t)
+	// 投递(纯密文,服务端不验内容;带发端签名 p2p#45)
+	ts0 := time.Now().Unix()
+	const nonce0 = "b(nonNzb24NCg=="
 	resp, body := c.do(http.MethodPost, "/v1/mailbox/"+k.id, map[string]any{
-		"from": fromHex, "nonce": "b(nonNzb24NCg==", "boxed": "Ym94ZWQ=",
+		"from": sender.id, "nonce": nonce0, "boxed": "Ym94ZWQ=", "ts": ts0,
+		"sig": sender.sign(t, sender.id, k.id, fmt.Sprint(ts0), nonce0),
 	}, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("投递失败: %d %s", resp.StatusCode, body)
 	}
-	// 弹出(取后即删)
-	resp, body = c.do(http.MethodGet, "/v1/mailbox/"+k.id, nil, nil)
+	// 弹出(取后即删;带收端签名 p2p#45)
+	popURL := func(nonce string) string {
+		ts := time.Now().Unix()
+		return "/v1/mailbox/" + k.id + "?ts=" + fmt.Sprint(ts) +
+			"&nonce=" + nonce + "&sig=" + url.QueryEscape(k.sign(t, k.id, fmt.Sprint(ts), nonce))
+	}
+	resp, body = c.do(http.MethodGet, popURL("pop-1"), nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("弹出失败: %d %s", resp.StatusCode, body)
 	}
@@ -121,9 +131,49 @@ func TestMailboxEndpointsRoundtrip(t *testing.T) {
 	if len(out.Entries) != 1 || out.Entries[0].Boxed != "Ym94ZWQ=" || out.Entries[0].TS <= 0 {
 		t.Fatalf("弹出条目不符: %s", body)
 	}
-	_, body = c.do(http.MethodGet, "/v1/mailbox/"+k.id, nil, nil)
+	_, body = c.do(http.MethodGet, popURL("pop-2"), nil, nil)
 	if err := json.Unmarshal(body, &out); err != nil || len(out.Entries) != 0 {
 		t.Fatalf("取后即删违反: %s", body)
+	}
+}
+
+func TestMailboxEndpointAuthRequired(t *testing.T) {
+	ts, _ := newTestServer(t, nil)
+	c := testClient{t: t, base: ts}
+	k := newNodeKey(t)
+	if resp := c.register(k, "http://direct.invalid"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("注册失败: %d", resp.StatusCode)
+	}
+	const fromHex = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	// 匿名投递(不带 ts/sig)→ 拒(p2p#45:信箱此前是唯一无调用方约束的写面)
+	resp, body := c.do(http.MethodPost, "/v1/mailbox/"+k.id, map[string]any{
+		"from": fromHex, "nonce": "anon", "boxed": "Yg==",
+	}, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("匿名投递应 401,实得 %d: %s", resp.StatusCode, body)
+	}
+
+	// 伪造签名(带 ts 但 sig 非法)→ 拒
+	resp, body = c.do(http.MethodPost, "/v1/mailbox/"+k.id, map[string]any{
+		"from": fromHex, "nonce": "forge", "boxed": "Yg==",
+		"ts": time.Now().Unix(), "sig": "Zm9yZ2Vk",
+	}, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("伪造签名投递应 401,实得 %d: %s", resp.StatusCode, body)
+	}
+
+	// 匿名弹出(不带 query 鉴权)→ 拒(取后即删,抢收=销毁投递通路)
+	resp, body = c.do(http.MethodGet, "/v1/mailbox/"+k.id, nil, nil)
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("匿名弹出必须被拒,实得 200: %s", body)
+	}
+
+	// 伪造签名弹出 → 401
+	resp, body = c.do(http.MethodGet, "/v1/mailbox/"+k.id+
+		"?ts="+fmt.Sprint(time.Now().Unix())+"&nonce=x&sig=Zm9yZ2Vk", nil, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("伪造签名弹出应 401,实得 %d: %s", resp.StatusCode, body)
 	}
 }
 
