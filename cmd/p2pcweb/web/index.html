@@ -520,7 +520,11 @@
       }, 500);
     }
     function showPairRequest(p) {
-      $('pair-from').textContent = p.name || (p.from || '').slice(0, 8) || '未知设备';
+      // p2p#48：名字是注册自选可被同名仿冒 ⇒ 始终并排展示敲门方 node_id 前 8 位
+      // （与敲门方客户端自显的 id 同口径，用户可当场比对）；名字已由服务端消毒。
+      const shortId = (p.from || '').slice(0, 8);
+      $('pair-from').textContent =
+        (p.name ? p.name + (shortId ? ' · ' + shortId : '') : shortId) || '未知设备';
       $('pair-card').classList.remove('hide');
       toast('有设备请求连接');
     }

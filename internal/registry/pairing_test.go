@@ -3,8 +3,11 @@ package registry
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // ---- 配对码测试脚手架 ----
@@ -232,6 +235,107 @@ func TestPairCodeUniqueness(t *testing.T) {
 			t.Fatalf("配对码碰撞: %s", code)
 		}
 		seen[code] = true
+	}
+}
+
+// ---- p2p#48：claim 节点维度配额 + 待确认展示名消毒 ----
+
+// registerWithName 以自定义显示名注册/刷新节点（注册语义同 f.register；
+// #48 展示名用例需要夹带恶意格式字符的 name）。
+func registerWithName(t *testing.T, f *fixture, n testNode, name string) {
+	t.Helper()
+	nonce := "reg-" + strconv.FormatInt(time.Now().UnixNano(), 10) // nonce 须唯一（f.register 已用过 "n"，重放检测会拒）
+	in := RegisterInput{
+		NodeID: n.id, URL: "https://node-a.example.com", Name: name, Version: "v1",
+		Caps: []string{"download"}, TTLSeconds: 3600, Nonce: nonce, TS: time.Now().Unix(),
+	}
+	in.Sig = n.sign(t, in.NodeID, in.URL, in.Name, in.Version, "download",
+		itoa(in.TTLSeconds), in.Nonce, itoa(in.TS))
+	if _, err := f.svc.RegisterNode(context.Background(), in, "10.0.0.1"); err != nil {
+		t.Fatalf("注册失败: %v", err)
+	}
+}
+
+// TestPairClaimPerNodeAttemptQuota 复现 #48 枚举绕过：per-IP 主防线在 IP 池下
+// 失效，同一身份的错码新尝试超过节点配额后必须被拒——限流键是身份而非 IP。
+// burst=10 与实现常量 claimNodeBurst 对齐（改实现须同步）。
+func TestPairClaimPerNodeAttemptQuota(t *testing.T) {
+	svc, _, _, claimant := newPairFixture(t, PairingConfig{})
+	const burst = 10
+	for i := 0; i < burst; i++ {
+		if _, err := pairClaim(t, svc, claimant, "9999", "c"+itoa(int64(i))); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("第 %d 次错码枚举应 ErrNotFound, 实际 %v", i+1, err)
+		}
+	}
+	if _, err := pairClaim(t, svc, claimant, "9999", "over"); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("同身份第 %d 次枚举应触发节点配额 ErrQuotaExceeded, 实际 %v", burst+1, err)
+	}
+}
+
+// TestPairClaimQuotaScopedToNode 配额按身份隔离：A 耗尽不牵连 B（键是 node，
+// 不是全局也不是 IP）。
+func TestPairClaimQuotaScopedToNode(t *testing.T) {
+	svc, f, _, claimant := newPairFixture(t, PairingConfig{})
+	other := newNode(t)
+	f.register(t, other, 3600)
+	const burst = 10
+	for i := 0; i < burst; i++ {
+		if _, err := pairClaim(t, svc, claimant, "9999", "c"+itoa(int64(i))); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("第 %d 次错码应 ErrNotFound, 实际 %v", i+1, err)
+		}
+	}
+	if _, err := pairClaim(t, svc, claimant, "9999", "over"); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("claimant 应已耗尽节点配额, 实际 %v", err)
+	}
+	if _, err := pairClaim(t, svc, other, "9999", "o1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("配额应按节点隔离, other 首次应 ErrNotFound, 实际 %v", err)
+	}
+}
+
+// TestPairClaimPollExemptFromNodeQuota 同 claim_id 轮询豁免配额：合法敲门方
+// 2s 定间隔轮询直至批准，额度只应咬住枚举新尝试而不是正常等待。
+func TestPairClaimPollExemptFromNodeQuota(t *testing.T) {
+	svc, _, creator, claimant := newPairFixture(t, PairingConfig{})
+	code, _ := pairCreate(t, svc, creator, "ABCDEFGHJKMNPQRSTWXYZ123")
+	if _, err := pairClaim(t, svc, claimant, code, "poll-1"); err != nil {
+		t.Fatalf("首 claim: %v", err)
+	}
+	for i := 0; i < 25; i++ {
+		res, err := pairClaim(t, svc, claimant, code, "poll-1")
+		if err != nil || res.Status != "pending" {
+			t.Fatalf("第 %d 次轮询应豁免配额且 pending: res=%+v err=%v", i+1, res, err)
+		}
+	}
+}
+
+// TestPairRequestViewDisplayNameSanitized #48 展示名可仿冒面：待确认请求的
+// name 是注册时自选值，展示前须剥 BiDi 覆写/零宽/BOM/控制符（防视觉仿冒），
+// 合法 UTF-8 与 emoji（含 ZWJ 连接序列）原样保留。
+func TestPairRequestViewDisplayNameSanitized(t *testing.T) {
+	svc, f, creator, claimant := newPairFixture(t, PairingConfig{})
+	raw := "真名\u202Egpm.live\u200B\uFEFF🤖👨\u200D👩\u200D👧\x07尾"
+	registerWithName(t, f, claimant, raw)
+	code, _ := pairCreate(t, svc, creator, "ABCDEFGHJKMNPQRSTWXYZ123")
+	if _, err := pairClaim(t, svc, claimant, code, "c1"); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	views := pairRequests(t, svc, creator)
+	if len(views) != 1 || len(views[0].Requests) != 1 {
+		t.Fatalf("应有待确认请求: %+v", views)
+	}
+	got := views[0].Requests[0].Name
+	if !utf8.ValidString(got) {
+		t.Fatalf("展示名须为合法 UTF-8: %q", got)
+	}
+	for _, r := range []rune{0x202E, 0x200B, 0xFEFF, 0x07} {
+		if strings.ContainsRune(got, r) {
+			t.Fatalf("展示名含不可见/控制符 %U: %q", r, got)
+		}
+	}
+	for _, want := range []string{"真名", "gpm.live", "🤖", "👨\u200D👩\u200D👧", "尾"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("展示名误伤 %q: %q", want, got)
+		}
 	}
 }
 

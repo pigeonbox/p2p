@@ -1,8 +1,9 @@
 // 配对码端点（2026-10-18，spec 见 hub docs/specs/2026-10-18-p2p-pairing-code-design.md）。
 //
 // create/approve/requests 为节点签名写语义，走全局写桶；claim 另叠加独立
-// per-IP 限流——错码无法归因到具体会话，per-IP 是枚举尝试的主防线（配合
-// 拒绝即烧码与一次性发放，见 spec §3）。
+// per-IP 限流——错码无法归因到具体会话（配合拒绝即烧码与一次性发放，见
+// spec §3）。IP 池下 per-IP 单层失效（p2p#48）⇒ 节点维度配额在
+// registry.Claim（按身份计费、同 claim_id 轮询豁免）双层并守。
 package server
 
 import (
