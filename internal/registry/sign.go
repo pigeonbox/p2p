@@ -27,6 +27,7 @@ const MaxClockSkew = 5 * time.Minute
 //	撤销公告:    node_id | code_hash | ts
 //	信箱投递:    from | to_node | ts | nonce   (发端签名,p2p#45)
 //	信箱弹出:    node_id | ts | nonce          (收端签名,node_id=to_node,p2p#45)
+//	会话遥测:    node_id | kind | path | reason | ts  (p2p#51,见 telemetry.go)
 //
 // caps 为逗号连接;缺省字段以空字符串占位。
 

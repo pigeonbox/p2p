@@ -152,6 +152,11 @@ func (s *Server) Handler() http.Handler {
 	// 邀请信箱(2026-10-14):纯密文投递/弹出,p2pd 不验内容。投递与弹出
 	// 均为写语义(弹出即删),同走写桶。
 	s.route(mux, "POST /v1/mailbox/{to_node}", "mailbox_post", s.writeLim, s.handleMailboxPost)
+
+	// 会话建立遥测(p2p#51):客户端在打洞/会话建立结果路径上报,p2pd 落
+	// p2p_session_* 指标。签名单源在 registry.TelemetryInput(与 mailbox
+	// 同款:写面必须带调用方签名),label 枚举白名单防基数爆炸/地址泄露。
+	s.route(mux, "POST /v1/telemetry/session", "telemetry_session", s.writeLim, s.handleTelemetrySession)
 	s.route(mux, "GET /v1/mailbox/{to_node}", "mailbox_pop", s.writeLim, s.handleMailboxPop)
 
 	s.route(mux, "GET /v1/admin/stats", "admin_stats", s.adminLim, s.adminGate(s.handleAdminStats))
@@ -304,6 +309,38 @@ func (s *Server) handleMailboxPost(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.MailboxPost(r.Context(), r.PathValue("to_node"), in); err != nil {
 		s.writeErr(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleTelemetrySession 会话建立遥测上报(p2p#51 直连率)。
+//
+// 顺序要紧:先 Validate(枚举白名单)再验签——集合外取值直接 400,不消耗
+// 验签成本;签名绑定 node_id+kind+path+reason+ts(重放窗口 ±MaxClockSkew,
+// 与其余写面同款)。指标只吃白名单枚举,故匿名/伪造无法注入任意 label。
+func (s *Server) handleTelemetrySession(w http.ResponseWriter, r *http.Request) {
+	var in registry.TelemetryInput
+	if !s.decode(w, r, &in) {
+		return
+	}
+	in.Kind = registry.NormalizeTelemetryKind(in.Kind)
+	if err := in.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := in.TelemetrySign(time.Now()); err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	switch in.Kind {
+	case registry.TelemetryEstablished:
+		s.metrics.SessionEstablished(in.Path)
+	case registry.TelemetryFailed:
+		s.metrics.SessionFailed(in.Reason)
+	case registry.TelemetryRelayFallback:
+		s.metrics.RelayFallback(in.Reason)
+		// 一行结构化日志:回退此前是黑盒(仅客户端日志),p2pd 侧可 grep/关联。
+		s.log.Info("会话回退中继", "reason", in.Reason, "node_id", in.NodeID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

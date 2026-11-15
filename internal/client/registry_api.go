@@ -79,6 +79,17 @@ func (r *registryAPI) announce(ctx context.Context, n *nodeIdentity, code string
 	return r.do(ctx, http.MethodPost, "/v1/announces", body, nil)
 }
 
+// telemetry 会话建立结果遥测上报(p2p#51)。签名负载单源
+// registry.BuildTelemetryPayload;path/reason 只传白名单枚举(脱敏)。
+func (r *registryAPI) telemetry(ctx context.Context, n *nodeIdentity, kind, path, reason string) error {
+	ts := time.Now().Unix()
+	body := map[string]any{
+		"node_id": n.id, "kind": kind, "path": path, "reason": reason,
+		"ts": ts, "sig": n.sign(registry.BuildTelemetryPayload(n.id, kind, path, reason, ts)),
+	}
+	return r.do(ctx, http.MethodPost, "/v1/telemetry/session", body, nil)
+}
+
 // resolve 解析口令→源节点（接收方用于身份钉定）。
 func (r *registryAPI) resolve(ctx context.Context, code string) (nodeID string, err error) {
 	hash := registry.CodeHash(code)
