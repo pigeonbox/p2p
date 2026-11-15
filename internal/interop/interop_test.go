@@ -120,7 +120,7 @@ func sha256File(t *testing.T, path string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fh.Close()
+	defer func() { _ = fh.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(h, fh); err != nil {
 		t.Fatal(err)
