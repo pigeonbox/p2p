@@ -68,20 +68,62 @@ func New(p Params) *Service {
 	return s
 }
 
-// MailboxPost 密封邀请投递(目标须处于有效租约内)。
+// MailboxPost 密封邀请投递(p2p#45:发端须对 from|to_node|ts|nonce 签名——
+// 信箱此前是唯一无调用方约束的写面,匿名可灌箱阻断目标节点;目标须处于
+// 有效租约内)。校验顺序:形态 → 查活 → 时间窗 → 验签 → nonce 去重
+// (防观察者在 ±5min 窗口内重放同一签名投递重复占箱)。
 func (s *Service) MailboxPost(ctx context.Context, toNode string, in MailboxInput) error {
 	toNode = strings.ToLower(toNode)
+	in.From = strings.ToLower(in.From)
+	if err := validateSealed(in); err != nil {
+		return err
+	}
 	if _, err := s.liveNodeErr(ctx, toNode); err != nil {
 		return err
+	}
+	pub, err := parseNodeID(in.From)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	// 验签先于时间窗:无凭据请求得 401(未授权)而非 400(时间戳过期)
+	payload := BuildPayload(in.From, toNode, fmt.Sprint(in.TS), in.Nonce)
+	if err := verifySig(pub, payload, in.Sig); err != nil {
+		return err
+	}
+	if err := checkTS(in.TS, s.now()); err != nil {
+		return err
+	}
+	// nonce 去重(验签通过后标记,与注册面同款——防重放重复占箱)
+	if !s.markNonce(in.From, in.Nonce, s.now()) {
+		return fmt.Errorf("%w: nonce 重放", ErrInvalidRequest)
 	}
 	return s.mbox.post(toNode, in)
 }
 
-// MailboxPop 弹出全部密封条目(取后即删;目标须处于有效租约内)。
-func (s *Service) MailboxPop(ctx context.Context, toNode string) ([]SealedEntry, error) {
+// MailboxPop 弹出全部密封条目(p2p#45:仅目标节点私钥持有者可弹——取后
+// 即删,匿名弹出=销毁投递通路;目标须处于有效租约内)。校验顺序:查活
+// → auth 形态 → 时间窗 → 验签 → nonce 去重(防重放抢收窗口内新到条目)。
+func (s *Service) MailboxPop(ctx context.Context, toNode string, auth PopAuth) ([]SealedEntry, error) {
 	toNode = strings.ToLower(toNode)
 	if _, err := s.liveNodeErr(ctx, toNode); err != nil {
 		return nil, err
+	}
+	if auth.Nonce == "" || len(auth.Nonce) > maxNonceLen {
+		return nil, fmt.Errorf("%w: nonce 缺失或过长", ErrInvalidRequest)
+	}
+	if err := checkTS(auth.TS, s.now()); err != nil {
+		return nil, err
+	}
+	pub, err := parseNodeID(toNode)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	payload := BuildPayload(toNode, fmt.Sprint(auth.TS), auth.Nonce)
+	if err := verifySig(pub, payload, auth.Sig); err != nil {
+		return nil, err
+	}
+	if !s.markNonce(toNode, auth.Nonce, s.now()) {
+		return nil, fmt.Errorf("%w: nonce 重放", ErrInvalidRequest)
 	}
 	entries, _ := s.mbox.pop(toNode)
 	return entries, nil

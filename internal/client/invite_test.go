@@ -91,7 +91,7 @@ func TestMailboxSkipsUnlistableSender(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.mailboxPost(ctx, recvID.id, ghost.id, nonce, boxed); err != nil {
+	if err := reg.mailboxPost(ctx, ghost, recvID.id, nonce, boxed); err != nil {
 		t.Fatal(err)
 	}
 	var got []InvitePayload
