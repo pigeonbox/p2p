@@ -74,6 +74,15 @@ type Relay struct {
 	// WaitingTimeout 等待配对超时(0=内置默认 60s)。
 	// env: PB_P2P_RELAY_WAITING_TIMEOUT
 	WaitingTimeout time.Duration
+	// IdleTimeout 配对后管道空闲上限(0=内置默认 2min;无字节即关,与信令
+	// idle_timeout 口径对齐)。env: PB_P2P_RELAY_IDLE_TIMEOUT
+	IdleTimeout time.Duration
+	// MaxChannelLifetime 配对后管道最长生命周期(0=内置默认 30min;持续流量
+	// 也不顺延)。env: PB_P2P_RELAY_MAX_CHANNEL_LIFETIME
+	MaxChannelLifetime time.Duration
+	// MaxActiveChannels 全局活动信道上限(0=内置默认 1024;对齐 max_waiting
+	// 的容量设计,超限拒绝新配对)。env: PB_P2P_RELAY_MAX_ACTIVE_CHANNELS
+	MaxActiveChannels int
 }
 
 // Reflector UDP 地址反射器（打洞前提;与 HTTP 同端口,默认开）。
@@ -216,6 +225,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("relay.max_waiting", 1024)
 	v.SetDefault("relay.max_conns_per_ip", 16)
 	v.SetDefault("relay.waiting_timeout", 60*time.Second)
+	v.SetDefault("relay.idle_timeout", 2*time.Minute)
+	v.SetDefault("relay.max_channel_lifetime", 30*time.Minute)
+	v.SetDefault("relay.max_active_channels", 1024)
 	v.SetDefault("reflector.enabled", true)
 	// 快照持久化(默认关=纯内存)与 metrics 加固
 	v.SetDefault("store.snapshot_path", "")
@@ -241,6 +253,7 @@ var knownKeys = map[string]bool{
 	"pairing.code_len": true, "pairing.max_per_node": true, "pairing.max_total": true,
 	"relay.enabled": true, "relay.port": true, "relay.mbps_per_channel": true,
 	"relay.max_waiting": true, "relay.max_conns_per_ip": true, "relay.waiting_timeout": true,
+	"relay.idle_timeout": true, "relay.max_channel_lifetime": true, "relay.max_active_channels": true,
 	"reflector.enabled":   true,
 	"store.snapshot_path": true, "store.snapshot_interval": true,
 	"metrics.strict": true,
@@ -315,12 +328,15 @@ func Load(path string) (*Config, error) {
 			MaxTotal:   v.GetInt("pairing.max_total"),
 		},
 		Relay: Relay{
-			Enabled:        v.GetBool("relay.enabled"),
-			Port:           v.GetInt("relay.port"),
-			MbpsPerChannel: v.GetInt64("relay.mbps_per_channel"),
-			MaxWaiting:     v.GetInt("relay.max_waiting"),
-			MaxConnsPerIP:  v.GetInt("relay.max_conns_per_ip"),
-			WaitingTimeout: v.GetDuration("relay.waiting_timeout"),
+			Enabled:            v.GetBool("relay.enabled"),
+			Port:               v.GetInt("relay.port"),
+			MbpsPerChannel:     v.GetInt64("relay.mbps_per_channel"),
+			MaxWaiting:         v.GetInt("relay.max_waiting"),
+			MaxConnsPerIP:      v.GetInt("relay.max_conns_per_ip"),
+			WaitingTimeout:     v.GetDuration("relay.waiting_timeout"),
+			IdleTimeout:        v.GetDuration("relay.idle_timeout"),
+			MaxChannelLifetime: v.GetDuration("relay.max_channel_lifetime"),
+			MaxActiveChannels:  v.GetInt("relay.max_active_channels"),
 		},
 		Reflector: Reflector{
 			Enabled: v.GetBool("reflector.enabled"),
@@ -429,9 +445,11 @@ func (c *Config) validate() error {
 		if c.Relay.MbpsPerChannel < 0 {
 			return fmt.Errorf("relay.mbps_per_channel 非法: %d", c.Relay.MbpsPerChannel)
 		}
-		if c.Relay.MaxWaiting < 0 || c.Relay.MaxConnsPerIP < 0 || c.Relay.WaitingTimeout < 0 {
-			return fmt.Errorf("relay 容量参数不可为负: max_waiting=%d max_conns_per_ip=%d waiting_timeout=%s",
-				c.Relay.MaxWaiting, c.Relay.MaxConnsPerIP, c.Relay.WaitingTimeout)
+		if c.Relay.MaxWaiting < 0 || c.Relay.MaxConnsPerIP < 0 || c.Relay.WaitingTimeout < 0 ||
+			c.Relay.IdleTimeout < 0 || c.Relay.MaxChannelLifetime < 0 || c.Relay.MaxActiveChannels < 0 {
+			return fmt.Errorf("relay 容量参数不可为负: max_waiting=%d max_conns_per_ip=%d waiting_timeout=%s idle_timeout=%s max_channel_lifetime=%s max_active_channels=%d",
+				c.Relay.MaxWaiting, c.Relay.MaxConnsPerIP, c.Relay.WaitingTimeout,
+				c.Relay.IdleTimeout, c.Relay.MaxChannelLifetime, c.Relay.MaxActiveChannels)
 		}
 	}
 	// TLS:要么都配要么都不配;证书文件存在性由启动时加载报错(此处只查形态)

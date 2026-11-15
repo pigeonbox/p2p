@@ -32,6 +32,11 @@ const (
 	// maxConnsPerIP 单 IP 并发连接上限(2026-10-05 审计 P2:此前随机 token
 	// 可占满全局 1024 等待槽令所有用户不可用;读写阶段一并计入)
 	maxConnsPerIP = 16
+	// p2p#49:配对后管道治理——空闲超时与信令 idle_timeout 口径对齐(2min),
+	// 生命周期上限与活动信道全局上限对齐 maxWaiting 的容量设计。
+	idleTimeout       = 2 * time.Minute
+	maxLifetime       = 30 * time.Minute
+	maxActiveChannels = 1024
 )
 
 // Params 中继服务参数(0 值/nil 用内置默认,见常量)。
@@ -44,7 +49,13 @@ type Params struct {
 	MaxConnsPerIP int
 	// WaitingTimeout 等待配对超时(0=默认)。
 	WaitingTimeout time.Duration
-	Log            *slog.Logger
+	// IdleTimeout 配对后管道空闲上限(0=默认 2min:无字节即关,p2p#49)。
+	IdleTimeout time.Duration
+	// MaxChannelLifetime 配对后管道最长生命周期(0=默认 30min,p2p#49)。
+	MaxChannelLifetime time.Duration
+	// MaxActiveChannels 全局活动信道上限(0=默认 1024;超限拒绝新配对,p2p#49)。
+	MaxActiveChannels int
+	Log               *slog.Logger
 }
 
 // Serve 阻塞服务中继，直到 ctx 结束或 listener 关闭。
@@ -61,6 +72,15 @@ func Serve(ctx context.Context, ln net.Listener, p Params) error {
 	if p.WaitingTimeout <= 0 {
 		p.WaitingTimeout = waitingTimeout
 	}
+	if p.IdleTimeout <= 0 {
+		p.IdleTimeout = idleTimeout
+	}
+	if p.MaxChannelLifetime <= 0 {
+		p.MaxChannelLifetime = maxLifetime
+	}
+	if p.MaxActiveChannels <= 0 {
+		p.MaxActiveChannels = maxActiveChannels
+	}
 	s := &server{
 		waiting:        make(map[string]net.Conn),
 		since:          make(map[string]time.Time),
@@ -70,6 +90,9 @@ func Serve(ctx context.Context, ln net.Listener, p Params) error {
 		maxWaiting:     p.MaxWaiting,
 		maxConnsPerIP:  p.MaxConnsPerIP,
 		waitingTimeout: p.WaitingTimeout,
+		idleTimeout:    p.IdleTimeout,
+		maxLifetime:    p.MaxChannelLifetime,
+		maxActive:      p.MaxActiveChannels,
 		log:            p.Log,
 	}
 	// 等待超时清扫（收编 oekit/concurrency/loop.Run 2026-11-03：周期任务+
@@ -119,7 +142,12 @@ type server struct {
 	maxWaiting     int
 	maxConnsPerIP  int
 	waitingTimeout time.Duration
-	log            *slog.Logger
+	// p2p#49:配对后管道治理
+	idleTimeout time.Duration
+	maxLifetime time.Duration
+	maxActive   int
+	active      int
+	log         *slog.Logger
 }
 
 // releaseIPLocked 归还一个 per-IP 槽位（调用方必须已持 s.mu）。
@@ -183,6 +211,15 @@ func (s *server) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 	if peer, ok := s.waiting[token]; ok {
+		// p2p#49:活动信道全局上限——只约束等待表会让配对完成后的信道
+		// 无限增长(单 IP 16 条空转即可长期占用中继带宽)。超限拒绝**新到的
+		// 配对连接**,先到的等待方留在 waiting 由超时清扫/下一端配对回收。
+		if s.active >= s.maxActive {
+			s.mu.Unlock()
+			_ = conn.Close()
+			return
+		}
+		s.active++
 		peerIP := s.waitingIP[token]
 		delete(s.waiting, token)
 		delete(s.since, token)
@@ -192,14 +229,7 @@ func (s *server) handle(ctx context.Context, conn net.Conn) {
 		// 配对成功:互为管道(单信道限速),任一端断开即双向关闭
 		// (数据面面向不可信对端,panic 只许死信道不许带崩进程——GoSafe 收编;
 		//  wg.Done 留在闭包内,panic 展开时仍先于 recover 执行,配对汇合语义不变)
-		var wg sync.WaitGroup
-		lim := newBucket(s.bytesPerSec)
-		wg.Add(2)
-		async.GoSafeLabeled("relay-pipe", func() { defer wg.Done(); pipe(ctx, conn, peer, lim) })
-		async.GoSafeLabeled("relay-pipe", func() { defer wg.Done(); pipe(ctx, peer, conn, lim) })
-		wg.Wait()
-		_ = conn.Close()
-		_ = peer.Close()
+		s.pair(ctx, conn, peer)
 		return
 	}
 	s.waiting[token] = conn
@@ -210,12 +240,54 @@ func (s *server) handle(ctx context.Context, conn net.Conn) {
 	release = false
 }
 
+// pair 配对成功后的管道阶段(p2p#49)。活动信道名额由调用方在持锁时
+// 占用,这里 defer 归还——无论管道正常收工还是中途 panic,计数都不泄漏。
+// 空闲/生命周期双超时经 pipeCtl 落在连接 deadline 上:任一方向有字节
+// 即续空闲期,生命周期上限不因流量顺延,到期由 Read/Write 超时掐断。
+func (s *server) pair(ctx context.Context, conn, peer net.Conn) {
+	defer func() {
+		s.mu.Lock()
+		s.active--
+		s.mu.Unlock()
+	}()
+	ctl := &pipeCtl{idle: s.idleTimeout, expireAt: time.Now().Add(s.maxLifetime)}
+	ctl.refresh(conn, peer) // 初始 deadline:配对后首字节前也受空闲约束
+	var wg sync.WaitGroup
+	lim := newBucket(s.bytesPerSec)
+	wg.Add(2)
+	async.GoSafeLabeled("relay-pipe", func() { defer wg.Done(); pipe(ctx, conn, peer, lim, ctl) })
+	async.GoSafeLabeled("relay-pipe", func() { defer wg.Done(); pipe(ctx, peer, conn, lim, ctl) })
+	wg.Wait()
+	_ = conn.Close()
+	_ = peer.Close()
+}
+
+// pipeCtl 配对后管道的超时治理(p2p#49):空闲超时 + 最长生命周期。
+type pipeCtl struct {
+	idle     time.Duration
+	expireAt time.Time // 出生 + MaxChannelLifetime
+}
+
+// refresh 把两端连接的 deadline 推到 min(now+idle, expireAt)。任一方向
+// 有字节即视为信道活跃(两端一起续),生命周期上限不顺延。
+// SetDeadline 是连接级且并发安全的:两个 pipe goroutine 同时刷新无害。
+func (c *pipeCtl) refresh(conns ...net.Conn) {
+	d := time.Now().Add(c.idle)
+	if c.expireAt.Before(d) {
+		d = c.expireAt
+	}
+	for _, cn := range conns {
+		_ = cn.SetDeadline(d)
+	}
+}
+
 // pipe 单向搬运;限速桶按方向共享(双向合计不超过单信道额度)。
-func pipe(ctx context.Context, dst, src net.Conn, lim *rate.Limiter) {
+func pipe(ctx context.Context, dst, src net.Conn, lim *rate.Limiter, ctl *pipeCtl) {
 	buf := make([]byte, pipeBufSize)
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
+			ctl.refresh(src, dst) // 有字节=信道活跃,续空闲期
 			if lim != nil {
 				if werr := lim.WaitN(ctx, n); werr != nil {
 					return
