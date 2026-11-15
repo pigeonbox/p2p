@@ -106,3 +106,24 @@ func decideVersion(localProto, localFloor, peerProto, peerFloor int) (int, error
 	}
 	return agreed, nil
 }
+
+// NegotiateWithPeerFrame 版本协商的 in-proc 对端模拟面（wire 互操作矩阵
+// pigeonbox/p2p#50，internal/interop 消费）：入参为对端线上版本帧字节
+// （可取自旧版 tag 的真实帧），把线上信令信道换成内存回放，返回协商结果与
+// 本端出帧。与 sendChannel/receiveFrom 走同一 negotiateVersion 实现，语义
+// 零分叉；仅供矩阵测试，生产路径不调用。
+func NegotiateWithPeerFrame(peerFrame []byte) (agreed int, ownFrame []byte, err error) {
+	ch := &memExch{peer: peerFrame}
+	agreed, err = negotiateVersion(ch)
+	return agreed, ch.sent, err
+}
+
+// memExch 内存回放信道（NegotiateWithPeerFrame 的最小 versionExchanger 实现）：
+// send 捕获本端出帧，recv 回放对端帧。
+type memExch struct {
+	peer []byte
+	sent []byte
+}
+
+func (m *memExch) send(p []byte) error   { m.sent = p; return nil }
+func (m *memExch) recv() ([]byte, error) { return m.peer, nil }
