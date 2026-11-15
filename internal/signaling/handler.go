@@ -2,6 +2,7 @@ package signaling
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -135,7 +136,7 @@ func (h *Hub) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := &peer{nodeID: hf.NodeID, conn: conn, writeWait: h.cfg.WriteWait}
+	p := &peer{nodeID: hf.NodeID, conn: conn, writeWait: h.cfg.WriteWait, ip: hostOf(r.RemoteAddr)}
 	// 出站管道在 peer 进入会话**之前**就建好。
 	//
 	// 顺序很重要：peer 一旦进了 session，janitor 与 broadcast 就可能从别的
@@ -186,6 +187,14 @@ func (h *Hub) handle(w http.ResponseWriter, r *http.Request) {
 	// 所以它不必与帧写出争那把「唯一写者」的锁。
 	async.GoSafeLabeled("signaling-ping", func() { h.pingPump(p) })
 	async.GoSafeLabeled("signaling-read", func() { h.readPump(sess, p) })
+}
+
+// hostOf 从 remote addr 提取 IP(去端口;解析失败回退整串)。
+func hostOf(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
 }
 
 func deny(conn *websocket.Conn, code int, msg string) {

@@ -96,6 +96,8 @@ func New(ctx context.Context, p Params) *Server {
 			MaxFrameBytes:      p.Config.Signaling.MaxFrameBytes,
 			MaxSessionsPerNode: p.Config.Signaling.MaxSessionsPerNode,
 			MaxTotalSessions:   p.Config.Signaling.MaxTotalSessions,
+			MaxUnpairedPerIP:   p.Config.Signaling.MaxUnpairedPerIP,
+			UnpairedTTL:        p.Config.Signaling.UnpairedTTL,
 		}, p.Service, m)
 	}
 	return &Server{

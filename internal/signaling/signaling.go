@@ -34,6 +34,12 @@ type Config struct {
 	MaxFrameBytes      int           // data 帧负载上限（PAKE/候选足够）
 	MaxSessionsPerNode int           // 单节点并发会话上限
 	MaxTotalSessions   int           // 全局并发会话上限
+	// MaxUnpairedPerIP 单 IP 未配对(waiting)会话上限(p2p#46:open 注册可
+	// 自造身份,per-node 配额挡不住单 IP 多身份占满全局 1024;0=不限)。
+	MaxUnpairedPerIP int
+	// UnpairedTTL 未配对会话短 TTL(p2p#46:配对通常秒级,未配对会话按此
+	// 提前回收;0 或 >SessionTTL 时 janitor 退回 SessionTTL)。
+	UnpairedTTL time.Duration
 }
 
 // DefaultConfig 默认参数。
@@ -47,6 +53,8 @@ func DefaultConfig() Config {
 		MaxFrameBytes:      16 << 10,
 		MaxSessionsPerNode: 8,
 		MaxTotalSessions:   1024,
+		MaxUnpairedPerIP:   64,
+		UnpairedTTL:        5 * time.Minute, // 与配对码 TTL 对齐:码 5min 过期前信道必须还在
 	}
 }
 
@@ -103,6 +111,8 @@ func NewHub(ctx context.Context, cfg Config, reg *registry.Service, m Metrics) *
 type peer struct {
 	nodeID string
 	conn   *websocket.Conn
+	// ip 连接来源 IP(p2p#46:未配对会话 per-IP 配额的计数键)。
+	ip string
 	// outbox 是这条连接唯一的帧写出口：websocket 实现不许并发写，所以帧
 	// 必须先进有界队列，由它独家取走。它同时管「慢消费者」——队列满了
 	// Send 只报告不处置，处置由本包按场景决定。
@@ -222,6 +232,29 @@ func (h *Hub) join(hash string, p *peer) (JoinOutcome, *session, error) {
 	if count >= h.cfg.MaxSessionsPerNode {
 		return JoinBusy, nil, errBusy("单节点会话数达上限")
 	}
+	// p2p#46:未配对(waiting)会话的 per-IP 上限——open 注册可自造身份,
+	// per-node 配额挡不住单 IP 多身份;未配对会话正是被用来占满全局
+	// 1024 配额的主力(每身份 8 条、十几个身份十几秒即可压满)。已配对
+	// 会话不计:配对需两端成本且受 per-node 约束。空 IP(理论防御)不拦。
+	if h.cfg.MaxUnpairedPerIP > 0 && p.ip != "" {
+		unpairedIP := 0
+		for _, sess := range h.sessions {
+			var owner *peer
+			n := 0
+			for _, q := range sess.snapshot() {
+				if q != nil {
+					n++
+					owner = q
+				}
+			}
+			if n == 1 && owner.ip == p.ip {
+				unpairedIP++
+			}
+		}
+		if unpairedIP >= h.cfg.MaxUnpairedPerIP {
+			return JoinBusy, nil, errBusy("单 IP 未配对会话数达上限")
+		}
+	}
 
 	if sess, ok := h.sessions[hash]; ok {
 		if sess.full() {
@@ -302,7 +335,13 @@ func callLeaveAfterDetach() {
 //     防护必须保留——loop 每轮自带 RunSafeLabeled(cfg.Name)，内层手包删除；
 //   - 忙时丢 tick 合并（ticker cap=1）与原 ticker 行为一致。
 func (h *Hub) janitor(ctx context.Context) {
-	interval := h.cfg.SessionTTL / 2
+	// p2p#46:清扫间隔须覆盖更短的 UnpairedTTL,否则短 TTL 最坏要等
+	// SessionTTL/2(默认 5min)才生效。
+	ttlFloor := h.cfg.SessionTTL
+	if u := h.unpairedTTL(); u < ttlFloor {
+		ttlFloor = u
+	}
+	interval := ttlFloor / 2
 	if interval < 250*time.Millisecond {
 		interval = 250 * time.Millisecond
 	}
@@ -318,7 +357,11 @@ func (h *Hub) janitor(ctx context.Context) {
 		h.mu.Lock()
 		var expired []*session
 		for hash, sess := range h.sessions {
-			if now.Sub(sess.createdAt) > h.cfg.SessionTTL {
+			ttl := h.cfg.SessionTTL
+			if unpaired(sess) {
+				ttl = h.unpairedTTL() // p2p#46:未配对会话按短 TTL 提前回收
+			}
+			if now.Sub(sess.createdAt) > ttl {
 				delete(h.sessions, hash)
 				expired = append(expired, sess)
 			}
@@ -330,6 +373,26 @@ func (h *Hub) janitor(ctx context.Context) {
 			sess.closeAll()
 		}
 	})
+}
+
+// unpairedTTL 归一后的未配对短 TTL(p2p#46):0(手写 Config 漏填)或
+// 大于 SessionTTL 的非法值一律退回 SessionTTL,保持旧行为不回退。
+func (h *Hub) unpairedTTL() time.Duration {
+	if h.cfg.UnpairedTTL <= 0 || h.cfg.UnpairedTTL > h.cfg.SessionTTL {
+		return h.cfg.SessionTTL
+	}
+	return h.cfg.UnpairedTTL
+}
+
+// unpaired 会话是否仍在等待配对(0 或 1 个 peer = 未配对;2 个=已配对)。
+func unpaired(sess *session) bool {
+	n := 0
+	for _, q := range sess.snapshot() {
+		if q != nil {
+			n++
+		}
+	}
+	return n <= 1
 }
 
 // ---- 出入站帧 ----

@@ -131,6 +131,12 @@ type Signaling struct {
 	MaxSessionsPerNode int
 	// MaxTotalSessions 全局并发会话上限。env: PB_P2P_SIGNALING_MAX_TOTAL
 	MaxTotalSessions int
+	// MaxUnpairedPerIP 单 IP 未配对(waiting)会话上限(p2p#46;0=不限)。
+	// env: PB_P2P_SIGNALING_MAX_UNPAIRED_PER_IP
+	MaxUnpairedPerIP int
+	// UnpairedTTL 未配对会话短 TTL(p2p#46;0 或 >session_ttl 时退回
+	// session_ttl)。env: PB_P2P_SIGNALING_UNPAIRED_TTL
+	UnpairedTTL time.Duration
 }
 
 // Pairing 配对码会话配置（2026-10-18，spec 见 hub docs/specs/2026-10-18-p2p-pairing-code-design.md）。
@@ -211,6 +217,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("signaling.max_frame_bytes", 16384)
 	v.SetDefault("signaling.max_sessions_per_node", 8)
 	v.SetDefault("signaling.max_total_sessions", 1024)
+	v.SetDefault("signaling.max_unpaired_per_ip", 64)
+	v.SetDefault("signaling.unpaired_ttl", 5*time.Minute)
 	// 配对码（默认开；TTL/寿命/位数/配额见 Pairing 结构注释）
 	v.SetDefault("pairing.enabled", true)
 	v.SetDefault("pairing.code_ttl", 5*time.Minute)
@@ -248,8 +256,9 @@ var knownKeys = map[string]bool{
 	"signaling.enabled": true, "signaling.session_ttl": true, "signaling.idle_timeout": true,
 	"signaling.hello_timeout": true, "signaling.ping_period": true, "signaling.write_wait": true,
 	"signaling.max_frame_bytes": true, "signaling.max_sessions_per_node": true,
-	"signaling.max_total_sessions": true,
-	"pairing.enabled":              true, "pairing.code_ttl": true, "pairing.session_ttl": true,
+	"signaling.max_total_sessions":  true,
+	"signaling.max_unpaired_per_ip": true, "signaling.unpaired_ttl": true,
+	"pairing.enabled": true, "pairing.code_ttl": true, "pairing.session_ttl": true,
 	"pairing.code_len": true, "pairing.max_per_node": true, "pairing.max_total": true,
 	"relay.enabled": true, "relay.port": true, "relay.mbps_per_channel": true,
 	"relay.max_waiting": true, "relay.max_conns_per_ip": true, "relay.waiting_timeout": true,
@@ -318,6 +327,8 @@ func Load(path string) (*Config, error) {
 			MaxFrameBytes:      v.GetInt("signaling.max_frame_bytes"),
 			MaxSessionsPerNode: v.GetInt("signaling.max_sessions_per_node"),
 			MaxTotalSessions:   v.GetInt("signaling.max_total_sessions"),
+			MaxUnpairedPerIP:   v.GetInt("signaling.max_unpaired_per_ip"),
+			UnpairedTTL:        v.GetDuration("signaling.unpaired_ttl"),
 		},
 		Pairing: Pairing{
 			Enabled:    v.GetBool("pairing.enabled"),
@@ -424,6 +435,10 @@ func (c *Config) validate() error {
 		if c.Signaling.MaxSessionsPerNode < 1 || c.Signaling.MaxTotalSessions < 1 {
 			return fmt.Errorf("signaling 会话上限非法: per_node=%d total=%d",
 				c.Signaling.MaxSessionsPerNode, c.Signaling.MaxTotalSessions)
+		}
+		if c.Signaling.MaxUnpairedPerIP < 0 || c.Signaling.UnpairedTTL < 0 {
+			return fmt.Errorf("signaling p2p#46 配额不可为负: max_unpaired_per_ip=%d unpaired_ttl=%s",
+				c.Signaling.MaxUnpairedPerIP, c.Signaling.UnpairedTTL)
 		}
 	}
 	if c.Pairing.Enabled {
