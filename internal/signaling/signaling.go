@@ -14,6 +14,7 @@ package signaling
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -78,6 +79,12 @@ type Hub struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session // code_hash → session
+
+	// p2p#47:hello 一次性凭据去重表(键 node_id|code_hash|ts,窗口 2×MaxClockSkew)。
+	// 与注册面 registry.markNonce 同款:独立锁,惰性清理防无界增长。
+	nonceMu   sync.Mutex
+	nonceSeen map[string]time.Time
+	nonceOps  int
 }
 
 // NewHub 构造信令中心；ctx 结束时停止清扫协程（连接不强制断开，随进程退出）。
@@ -382,6 +389,47 @@ func (h *Hub) unpairedTTL() time.Duration {
 		return h.cfg.SessionTTL
 	}
 	return h.cfg.UnpairedTTL
+}
+
+// markHello 记录并检查 (node_id,code_hash,ts) 是否首次出现(p2p#47)。
+// ts 是帧内既有字段:秒级精度 + ±MaxClockSkew 时间窗,天然是一次性凭据——
+// 明文链路上被观察的 hello 帧在窗口内重放必被拒,而换 ts(重连)或换
+// code_hash(同秒多信道)是新键,不受影响。窗口与清理形状照抄 registry.markNonce。
+func (h *Hub) markHello(nodeID, hash string, ts int64, now time.Time) bool {
+	const rememberWindow = 2 * registry.MaxClockSkew
+	h.nonceMu.Lock()
+	defer h.nonceMu.Unlock()
+	if h.nonceSeen == nil {
+		h.nonceSeen = make(map[string]time.Time, 1024)
+	}
+	h.nonceOps++
+	if h.nonceOps%4096 == 0 { // 周期清理过期项,防无界增长
+		for k, at := range h.nonceSeen {
+			if now.Sub(at) > rememberWindow {
+				delete(h.nonceSeen, k)
+			}
+		}
+	}
+	key := helloKey(nodeID, hash, ts)
+	if at, ok := h.nonceSeen[key]; ok && now.Sub(at) <= rememberWindow {
+		return false
+	}
+	h.nonceSeen[key] = now
+	return true
+}
+
+// helloKey 去重键。
+func helloKey(nodeID, hash string, ts int64) string {
+	return nodeID + "|" + hash + "|" + strconv.FormatInt(ts, 10)
+}
+
+// rollbackHello 准入失败(join busy)时归还凭据(p2p#47):预标记在 join 之前
+// 是为了堵并发重放的竞态窗口,但被 busy 拒的合法接入(如等补位的同 ts 再
+// 进入)不该消耗一次性凭据——不回滚会误杀这类重试。
+func (h *Hub) rollbackHello(nodeID, hash string, ts int64) {
+	h.nonceMu.Lock()
+	delete(h.nonceSeen, helloKey(nodeID, hash, ts))
+	h.nonceMu.Unlock()
 }
 
 // unpaired 会话是否仍在等待配对(0 或 1 个 peer = 未配对;2 个=已配对)。
