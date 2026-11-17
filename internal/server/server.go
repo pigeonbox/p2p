@@ -316,8 +316,9 @@ func (s *Server) handleMailboxPost(w http.ResponseWriter, r *http.Request) {
 // handleTelemetrySession 会话建立遥测上报(p2p#51 直连率)。
 //
 // 顺序要紧:先 Validate(枚举白名单)再验签——集合外取值直接 400,不消耗
-// 验签成本;签名绑定 node_id+kind+path+reason+ts(重放窗口 ±MaxClockSkew,
-// 与其余写面同款)。指标只吃白名单枚举,故匿名/伪造无法注入任意 label。
+// 验签成本;签名绑定 node_id+kind+path+reason+net+dur_ms+ts(重放窗口
+// ±MaxClockSkew,与其余写面同款;旧客户端的 v1 负载由 registry 侧兼容校验)。
+// 指标只吃白名单枚举,故匿名/伪造无法注入任意 label。
 func (s *Server) handleTelemetrySession(w http.ResponseWriter, r *http.Request) {
 	var in registry.TelemetryInput
 	if !s.decode(w, r, &in) {
@@ -335,12 +336,20 @@ func (s *Server) handleTelemetrySession(w http.ResponseWriter, r *http.Request) 
 	switch in.Kind {
 	case registry.TelemetryEstablished:
 		s.metrics.SessionEstablished(in.Path)
+		s.metrics.SessionEstablishedByNet(in.Path, in.Net)
 	case registry.TelemetryFailed:
 		s.metrics.SessionFailed(in.Reason)
+		s.metrics.SessionFailedByNet(in.Reason, in.Net)
 	case registry.TelemetryRelayFallback:
 		s.metrics.RelayFallback(in.Reason)
+		s.metrics.RelayFallbackByNet(in.Reason, in.Net)
+		s.metrics.RelayFallbackDuration(in.Reason, in.Net, in.DurMS)
 		// 一行结构化日志:回退此前是黑盒(仅客户端日志),p2pd 侧可 grep/关联。
 		s.log.Info("会话回退中继", "reason", in.Reason, "node_id", in.NodeID)
+	case registry.TelemetryDirectUpgrade:
+		s.metrics.DirectUpgrade(in.Reason, in.Net)
+		s.metrics.DirectUpgradeDuration(in.Reason, in.Net, in.DurMS)
+		s.log.Info("直连升级", "result", in.Reason, "node_id", in.NodeID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

@@ -79,13 +79,15 @@ func (r *registryAPI) announce(ctx context.Context, n *nodeIdentity, code string
 	return r.do(ctx, http.MethodPost, "/v1/announces", body, nil)
 }
 
-// telemetry 会话建立结果遥测上报(p2p#51)。签名负载单源
-// registry.BuildTelemetryPayload;path/reason 只传白名单枚举(脱敏)。
-func (r *registryAPI) telemetry(ctx context.Context, n *nodeIdentity, kind, path, reason string) error {
+// telemetry 会话建立结果遥测上报(p2p#51 直连率：补分桶与耗时)。
+// 签名负载单源 registry.BuildTelemetryPayload(v2);path/reason/net 只传白名单
+// 枚举(脱敏:无地址、无错误原文),dur_ms 只传耗时数字。
+func (r *registryAPI) telemetry(ctx context.Context, n *nodeIdentity, kind, path, reason, net string, durMS int64) error {
 	ts := time.Now().Unix()
 	body := map[string]any{
 		"node_id": n.id, "kind": kind, "path": path, "reason": reason,
-		"ts": ts, "sig": n.sign(registry.BuildTelemetryPayload(n.id, kind, path, reason, ts)),
+		"net": net, "dur_ms": durMS,
+		"ts": ts, "sig": n.sign(registry.BuildTelemetryPayload(n.id, kind, path, reason, net, durMS, ts)),
 	}
 	return r.do(ctx, http.MethodPost, "/v1/telemetry/session", body, nil)
 }
