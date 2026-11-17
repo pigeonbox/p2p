@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pigeonbox/p2p/internal/config"
+	"github.com/pigeonbox/p2p/internal/directpolicy"
 	"github.com/pigeonbox/p2p/internal/registry"
 )
 
@@ -345,7 +345,7 @@ var directPolicyEnvKeys = []string{
 	"PB_P2P_DIRECT_RELAY_FALLBACK_ENABLED",
 }
 
-// clearDirectPolicyEnv 清空策略环境变量(viper 把空值当未设置)。
+// clearDirectPolicyEnv 清空策略环境变量(空值按未设置处理)。
 func clearDirectPolicyEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range directPolicyEnvKeys {
@@ -360,7 +360,7 @@ func clearDirectPolicyEnv(t *testing.T) {
 // 的证明)。
 func TestDirectPolicyDefaultsUnchanged(t *testing.T) {
 	clearDirectPolicyEnv(t)
-	d, warns := config.LoadDirect()
+	d, warns := directpolicy.Load()
 	if len(warns) != 0 {
 		t.Fatalf("缺省不应告警: %v", warns)
 	}
@@ -386,7 +386,7 @@ func TestDirectPolicyEnvOverrideAndClamp(t *testing.T) {
 	clearDirectPolicyEnv(t)
 	t.Setenv("PB_P2P_DIRECT_FAST_PUNCH_BUDGET", "800ms")
 	t.Setenv("PB_P2P_DIRECT_RELAY_FALLBACK_ENABLED", "false")
-	d, warns := config.LoadDirect()
+	d, warns := directpolicy.Load()
 	if len(warns) != 0 {
 		t.Fatalf("合法取值不应告警: %v", warns)
 	}
@@ -399,7 +399,7 @@ func TestDirectPolicyEnvOverrideAndClamp(t *testing.T) {
 
 	// 非法取值 ⇒ 钳回缺省 + 告警
 	t.Setenv("PB_P2P_DIRECT_FAST_PUNCH_BUDGET", "not-a-duration")
-	d, warns = config.LoadDirect()
+	d, warns = directpolicy.Load()
 	if len(warns) == 0 {
 		t.Fatal("非法取值应告警")
 	}
@@ -411,7 +411,7 @@ func TestDirectPolicyEnvOverrideAndClamp(t *testing.T) {
 	// 静默关掉中继回退会让「打不通就换中继」的兜底消失,传输直接失败。
 	t.Setenv("PB_P2P_DIRECT_FAST_PUNCH_BUDGET", "800ms")
 	t.Setenv("PB_P2P_DIRECT_RELAY_FALLBACK_ENABLED", "flase")
-	d, warns = config.LoadDirect()
+	d, warns = directpolicy.Load()
 	if len(warns) == 0 {
 		t.Fatal("非法布尔取值应告警")
 	}

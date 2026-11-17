@@ -19,7 +19,7 @@ import (
 
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/concurrency/retry"
-	"github.com/pigeonbox/p2p/internal/config"
+	"github.com/pigeonbox/p2p/internal/directpolicy"
 	"github.com/pigeonbox/p2p/internal/registry"
 	"github.com/pigeonbox/p2p/internal/wire"
 )
@@ -41,9 +41,9 @@ type Options struct {
 	// NoRelay 仅直连:跳过中继兜底,打洞失败即报错(强制直连/诊断用)
 	NoRelay bool
 	// Direct 直传策略(p2p#51:中继回退的触发条件与延迟)。
-	// nil=按环境变量读(config.LoadDirect;缺省逐字等于今日行为);
+	// nil=按环境变量读(directpolicy.Load;缺省逐字等于今日行为);
 	// 非 nil=调用方显式指定(仍过钳制:非法值回退缺省)。
-	Direct *config.Direct
+	Direct *directpolicy.Policy
 	// PunchBudget 打洞预算（默认 4s）
 	PunchBudget time.Duration
 	// Quiet 关闭过程日志
@@ -106,11 +106,11 @@ func New(opt Options) (*Client, error) {
 	// (缺省逐字等于今日行为⇒ 不配置时行为完全一致)。
 	var policyWarn []string
 	if opt.Direct == nil {
-		d, warns := config.LoadDirect()
+		d, warns := directpolicy.Load()
 		opt.Direct = &d
 		policyWarn = warns
 	} else {
-		d, warns := config.NormalizeDirect(*opt.Direct)
+		d, warns := directpolicy.Normalize(*opt.Direct)
 		opt.Direct = &d
 		policyWarn = warns
 	}

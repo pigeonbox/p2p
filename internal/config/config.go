@@ -7,7 +7,6 @@ package config
 import (
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"time"
 
@@ -108,99 +107,6 @@ type Metrics struct {
 	// Strict 公共部署加固:未配置管理口令时 /metrics 直接 404 而非默认开放。
 	// env: PB_P2P_METRICS_STRICT
 	Strict bool
-}
-
-// Direct 直传客户端策略(p2p#51:中继回退的触发条件与延迟)。
-//
-// 决策方在**客户端**(p2pc):回退与否由客户端的打洞结果决定,p2pd 不参与
-// ⇒ 这些旋钮**不进 p2pd 的配置文件键集**(避免 p2pd#38 同款「死配置」:
-// 登记了键却没人读)。注入方式是环境变量(PB_P2P_DIRECT_*),与本包的 env
-// 约定同构(PB_P2P 前缀 + "."→"_" 替换)。
-//
-// ⚠️ 缺省值逐字等于 2026-11-15 前的硬编码行为 ⇒ **不配置时行为与今天
-// 完全一致**(回退决策链见 internal/client/client.go 的 establish)。
-type Direct struct {
-	// FastPunchBudget 快打洞预算:直连尝试多久后回退中继(=回退触发延迟)。
-	// 缺省 1.5s(与旧硬编码一致)。env: PB_P2P_DIRECT_FAST_PUNCH_BUDGET
-	FastPunchBudget time.Duration
-	// PunchBudget 长打洞兜底预算:回退路径里「没有中继可用」时的直连尝试
-	// 时长。缺省 4s(与 client.Options.PunchBudget 的缺省一致)。
-	// env: PB_P2P_DIRECT_PUNCH_BUDGET
-	PunchBudget time.Duration
-	// RelayProbeTimeout 中继可达性探测超时:探测窗口多长算中继不可用。
-	// 缺省 2s(与旧硬编码一致)。env: PB_P2P_DIRECT_RELAY_PROBE_TIMEOUT
-	RelayProbeTimeout time.Duration
-	// RelayFallbackEnabled 是否允许回退中继(false=只长打洞兜底,等同
-	// client.Options.NoRelay 的语义)。缺省 true(中继是打洞失败的必要兜底)。
-	// env: PB_P2P_DIRECT_RELAY_FALLBACK_ENABLED
-	RelayFallbackEnabled bool
-}
-
-// 直传策略缺省值(逐字等于 2026-11-15 前的硬编码行为;改动即改行为,须同步
-// internal/client 的回退决策链与本包的断言)。
-const (
-	DefaultDirectFastPunchBudget     = 1500 * time.Millisecond
-	DefaultDirectPunchBudget         = 4 * time.Second
-	DefaultDirectRelayProbeTimeout   = 2 * time.Second
-	DefaultDirectRelayFallbackEnable = true
-)
-
-// LoadDirect 读取直传策略:环境变量优先,缺省=内置缺省。
-//
-// 返回的告警串由调用方打日志(客户端侧)。非法取值**钳回缺省**而非报错:
-// p2pc 是无状态 CLI,策略拼错不该让它起不来(p2pd 侧的配置错误是
-// refuse-to-start,这里是 best-effort + 告警)。
-func LoadDirect() (Direct, []string) {
-	v := viper.New()
-	v.SetEnvPrefix("PB_P2P")
-	v.AutomaticEnv()
-	// direct.fast_punch_budget → PB_P2P_DIRECT_FAST_PUNCH_BUDGET
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	v.SetDefault("direct.fast_punch_budget", DefaultDirectFastPunchBudget)
-	v.SetDefault("direct.punch_budget", DefaultDirectPunchBudget)
-	v.SetDefault("direct.relay_probe_timeout", DefaultDirectRelayProbeTimeout)
-	v.SetDefault("direct.relay_fallback_enabled", DefaultDirectRelayFallbackEnable)
-	d := Direct{
-		FastPunchBudget:   v.GetDuration("direct.fast_punch_budget"),
-		PunchBudget:       v.GetDuration("direct.punch_budget"),
-		RelayProbeTimeout: v.GetDuration("direct.relay_probe_timeout"),
-	}
-	// 开关自己解析(不走 viper.GetBool):cast.ToBool 对无法识别的串一律给
-	// false ⇒ 一次手误("flase")就会**静默关掉中继回退**。这里只认白名单
-	// 取值,其余折回缺省并告警(不能静默:运维要知道自己写错了)。
-	var warns []string
-	switch strings.ToLower(strings.TrimSpace(v.GetString("direct.relay_fallback_enabled"))) {
-	case "1", "t", "true", "yes", "y", "on":
-		d.RelayFallbackEnabled = true
-	case "0", "f", "false", "no", "n", "off":
-		d.RelayFallbackEnabled = false
-	default:
-		warns = append(warns, "direct.relay_fallback_enabled 取值非法,已回退缺省 "+strconv.FormatBool(DefaultDirectRelayFallbackEnable))
-		d.RelayFallbackEnabled = DefaultDirectRelayFallbackEnable
-	}
-	d, normWarns := NormalizeDirect(d)
-	return d, append(warns, normWarns...)
-}
-
-// NormalizeDirect 钳制策略取值:非法值回退缺省,返回告警串。
-//
-// 客户端显式指定策略时也走这里(显式值同样要过钳制——零值/负值会让打洞
-// 预算变成 0 ⇒ 快打洞立刻判负 ⇒ 行为比不配置更糟)。
-func NormalizeDirect(d Direct) (Direct, []string) {
-	var warns []string
-	if d.FastPunchBudget <= 0 {
-		warns = append(warns, "direct.fast_punch_budget 取值非法,已回退缺省 "+DefaultDirectFastPunchBudget.String())
-		d.FastPunchBudget = DefaultDirectFastPunchBudget
-	}
-	if d.PunchBudget <= 0 {
-		warns = append(warns, "direct.punch_budget 取值非法,已回退缺省 "+DefaultDirectPunchBudget.String())
-		d.PunchBudget = DefaultDirectPunchBudget
-	}
-	if d.RelayProbeTimeout <= 0 {
-		warns = append(warns, "direct.relay_probe_timeout 取值非法,已回退缺省 "+DefaultDirectRelayProbeTimeout.String())
-		d.RelayProbeTimeout = DefaultDirectRelayProbeTimeout
-	}
-	return d, warns
 }
 
 // Signaling WS 信令信道配置（M3 设备直传；默认开——准入由节点签名把守，
