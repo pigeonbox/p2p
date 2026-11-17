@@ -59,9 +59,11 @@ jobs:
             *) echo "::error::version 必须是现有 tag（带 v 前缀），如 v0.9.7；收到: $REL_TAG"; exit 1 ;;
           esac
           V="${REL_TAG#v}"
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "major_minor=${V%.*}" >> "$GITHUB_OUTPUT"
-          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$V"
+            echo "major_minor=${V%.*}"
+            echo "commit=$(git rev-parse --short HEAD)"
+          } >> "$GITHUB_OUTPUT"
           echo "目标版本 $REL_TAG（commit $(git rev-parse --short HEAD)）"
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -123,7 +125,7 @@ jobs:
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-w -s -X 'github.com/oekit/core/version.Version=${VERSION}' -X 'github.com/oekit/core/version.BuildCommit=${COMMIT}' -X 'github.com/oekit/core/version.BuildTime=${BUILD_TIME}'"
           mkdir -p out
-          build() { GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o "out/$3" ./cmd/$4; }
+          build() { GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o "out/$3" ./cmd/"$4"; }
           build linux   amd64 p2pc-x86_64-unknown-linux-gnu        p2pc
           build linux   arm64 p2pc-aarch64-unknown-linux-gnu       p2pc
           build darwin  amd64 p2pc-x86_64-apple-darwin             p2pc
@@ -173,7 +175,7 @@ jobs:
               --notes "${NOTES}"
           mkdir -p /tmp/p2pc
           ok=0
-          for i in 1 2 3 4 5 6; do
+          for _ in 1 2 3 4 5 6; do
             if gh release download "$TAG" --repo pigeonbox/p2p --dir /tmp/p2pc --clobber; then ok=1; break; fi
             sleep 15
           done
@@ -186,7 +188,7 @@ jobs:
           gh release edit "p2p-$TAG" --repo pigeonbox/pigeonbox --latest=false || true
           # 回挂完整性校验（p2p#59）：hub 侧被外部删除/半删后重跑，必须补齐
           # 与本仓 Release 同集的 p2pc-* 资产，而不是"命令返回 0 就算好"。
-          expected=$(ls /tmp/p2pc/p2pc-* | wc -l | tr -d ' ')
+          expected=$(find /tmp/p2pc -maxdepth 1 -name 'p2pc-*' -type f | wc -l | tr -d ' ')
           got=$(gh release view "p2p-$TAG" --repo pigeonbox/pigeonbox --json assets \
             --jq '[.assets[] | select(.name | startswith("p2pc-"))] | length')
           [ "$got" -eq "$expected" ] || { echo "::error::hub 回挂资产数 $got ≠ 本仓 $expected"; exit 1; }
