@@ -43,6 +43,88 @@ type Server struct {
 	cfg       *cfgStore
 	mgr       *Manager
 	shares    *shareTable
+	pairs     *pairStore    // 一次性配对码（p2p#58）
+	sessions  *sessionStore // 配对/令牌换来的会话 Cookie（p2p#58）
+}
+
+const (
+	// pairCodeTTL 一次性配对码有效期：短到即使被旁观/截屏也难以复用。
+	pairCodeTTL = 60 * time.Second
+	// sessionTTL 服务端会话上限；Cookie 本身是浏览器会话级（无 Max-Age）。
+	sessionTTL    = 12 * time.Hour
+	sessionCookie = "p2pcweb_session"
+	pairCodeQuery = "c"
+)
+
+// pairStore 一次性配对码：单码、TTL、用后即焚（p2p#58）。
+// 换到的只是会话 Cookie，长期访问令牌始终不出现在 URL/日志里。
+type pairStore struct {
+	mu      sync.Mutex
+	code    string
+	expires time.Time
+	used    bool
+}
+
+func newPairStore(ttl time.Duration) (*pairStore, error) {
+	code, err := newToken()
+	if err != nil {
+		return nil, err
+	}
+	return &pairStore{code: code, expires: time.Now().Add(ttl)}, nil
+}
+
+// consume 恒时比较配对码；成功即焚。过期/复用/错误码一律 false。
+func (p *pairStore) consume(code string) bool {
+	if p == nil || code == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.used || time.Now().After(p.expires) || !secureEqual(code, p.code) {
+		return false
+	}
+	p.used = true
+	return true
+}
+
+// sessionStore 服务端会话表：配对成功签发随机 sid，写入 HttpOnly
+// SameSite=Strict Cookie；浏览器此后自动携带，前端无需把令牌放进 URL。
+type sessionStore struct {
+	mu    sync.Mutex
+	items map[string]time.Time // sid → 过期时间
+}
+
+func newSessionStore() *sessionStore {
+	return &sessionStore{items: map[string]time.Time{}}
+}
+
+func (t *sessionStore) add(sid string, exp time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now()
+	for k, e := range t.items {
+		if now.After(e) {
+			delete(t.items, k)
+		}
+	}
+	t.items[sid] = exp
+}
+
+func (t *sessionStore) valid(sid string) bool {
+	if t == nil || sid == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	exp, ok := t.items[sid]
+	if !ok {
+		return false
+	}
+	if time.Now().After(exp) {
+		delete(t.items, sid)
+		return false
+	}
+	return true
 }
 
 // shareTable 浏览器直下分享:一次性令牌链接,15 分钟过期,上限 4 个在席。
@@ -192,27 +274,76 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 }
 
 // guard 令牌 + Host 校验。
-// 令牌优先取 X-P2PCWEB 头;query 令牌仅对首屏文档请求(/)放行——API 若也
-// 收 query 令牌,每个请求的 URL 都带凭据,会进反代/浏览器历史等日志面。
-// 页面加载后由前端把令牌挪入 sessionStorage 并以头方式携带,URL 里的
-// ?t= 只在入口那一次出现。
+//
+// 凭据形态（p2p#58）：X-P2PCWEB 头（前端 sessionStorage / 旧客户端）或
+// HttpOnly 会话 Cookie（一次性配对码 / 页面内令牌表单换得）。**URL query
+// 里的长期令牌（?t=）已彻底不再接受**——它会把凭据写进浏览器历史、截图、
+// 反代 access log。首屏文档未认证时返回输入令牌/配对码的登录页，而不是
+// 把令牌塞回 URL。
 func (s *Server) guard(fn http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tok := r.Header.Get("X-P2PCWEB")
-		if tok == "" && r.URL.Path == "/" {
-			tok = r.URL.Query().Get("t")
-		}
-		if !secureEqual(tok, s.token) {
-			http.Error(w, "403：令牌无效，请从启动时打印的完整地址进入", http.StatusForbidden)
-			return
-		}
 		if s.loopback && !s.sameLoopbackHost(r.Host) {
 			// 防 DNS rebinding：回环部署下 Host 必须是本机回环名 + 本服务端口
 			http.Error(w, "403：Host 校验失败", http.StatusForbidden)
 			return
 		}
+		// 一次性配对码入口：只对首屏 GET / 生效，兑换后 303 到干净 URL。
+		if r.Method == http.MethodGet && r.URL.Path == "/" {
+			if code := r.URL.Query().Get(pairCodeQuery); code != "" {
+				if s.pairs.consume(code) {
+					s.issueSession(w)
+					http.Redirect(w, r, "/", http.StatusSeeOther)
+					return
+				}
+				http.Error(w, "403：配对码无效、已用过或已过期（60 秒内有效）", http.StatusForbidden)
+				return
+			}
+		}
+		tok := r.Header.Get("X-P2PCWEB")
+		if !secureEqual(tok, s.token) && !s.sessionValid(r) {
+			if r.Method == http.MethodGet && r.URL.Path == "/" {
+				s.serveLogin(w)
+				return
+			}
+			http.Error(w, "403：令牌无效，请从启动时打印的地址进入并输入配对码/令牌", http.StatusForbidden)
+			return
+		}
 		fn(w, r)
 	}
+}
+
+// sessionValid 浏览器带上的会话 Cookie 是否仍有效。
+func (s *Server) sessionValid(r *http.Request) bool {
+	if s.sessions == nil {
+		return false
+	}
+	c, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return false
+	}
+	return s.sessions.valid(c.Value)
+}
+
+// issueSession 签发新的服务端会话并写入 HttpOnly/SameSite=Strict Cookie。
+// 回环 HTTP 部署不设 Secure（设了浏览器不会回传）；Cookie 无 Max-Age，
+// 关浏览器即失效，服务端另有 sessionTTL 上限。
+func (s *Server) issueSession(w http.ResponseWriter) {
+	sid, err := newToken()
+	if err != nil {
+		http.Error(w, "内部错误：无法签发会话", http.StatusInternalServerError)
+		return
+	}
+	if s.sessions == nil {
+		s.sessions = newSessionStore()
+	}
+	s.sessions.add(sid, time.Now().Add(sessionTTL))
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    sid,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
 }
 
 // sameLoopbackHost Host 头须为回环主机名 + 本服务端口。
@@ -236,6 +367,8 @@ func (s *Server) sameLoopbackHost(hostPort string) bool {
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
+	// 令牌/配对码换会话 Cookie（p2p#58）：表单或 JSON 提交，凭据不进 URL。
+	mux.HandleFunc("POST /pair", s.handlePair)
 	mux.HandleFunc("/", s.guard(s.handleIndex))
 	mux.HandleFunc("/api/state", s.guard(s.handleState))
 	mux.HandleFunc("/api/config", s.guard(s.handleConfig))
@@ -264,6 +397,99 @@ func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(b)
 }
+
+// handlePair 用访问令牌或一次性配对码换 HttpOnly 会话 Cookie。
+// 支持表单（登录页）与 JSON（fnOS fragment #t= 兼容脚本）两种提交。
+func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
+	if s.loopback && !s.sameLoopbackHost(r.Host) {
+		http.Error(w, "403：Host 校验失败", http.StatusForbidden)
+		return
+	}
+	var cred string
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var in struct{ Token string }
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&in); err != nil {
+			http.Error(w, "400：请求体非法", http.StatusBadRequest)
+			return
+		}
+		cred = strings.TrimSpace(in.Token)
+	} else {
+		_ = r.ParseForm()
+		cred = strings.TrimSpace(r.FormValue("token"))
+	}
+	ok := secureEqual(cred, s.token)
+	if !ok {
+		ok = s.pairs.consume(cred)
+	}
+	if !ok {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, strings.Replace(loginPage, "<!--ERR-->", `<p class="err">配对码/令牌无效或已过期（配对码 60 秒内有效，仅一次）。</p>`, 1))
+		return
+	}
+	s.issueSession(w)
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// serveLogin 未认证的首屏文档：给一个令牌/配对码输入页，不把凭据放进 URL。
+func (s *Server) serveLogin(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Frame-Options", "DENY")
+	_, _ = io.WriteString(w, strings.Replace(loginPage, "<!--ERR-->", "", 1))
+}
+
+// loginPage 极简登录页。fnOS 等旧集成仍可用 fragment #t=<令牌>：
+// fragment 不会进服务端/代理日志，页面脚本把它 POST 到 /pair 换 Cookie。
+const loginPage = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PigeonBeam 访问验证</title>
+<style>
+  :root { color-scheme: light dark; --pri:#5e6ad2; --bg:#f7f8fa; --card:#fff; --text:#24262e; --muted:#7a7f8e; --border:#dfe2ec; --err:#d64545; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1013; --card:#1d2026; --text:#e8eaf0; --muted:#8a8f9c; --border:#33363f; } }
+  * { box-sizing: border-box; }
+  body { min-height:100vh; margin:0; display:flex; align-items:center; justify-content:center; padding:24px;
+         font-family:-apple-system,"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+         background:linear-gradient(160deg,#eef1ff,var(--bg)); color:var(--text); }
+  .card { width:380px; max-width:96vw; background:var(--card); border:1px solid var(--border); border-radius:14px; padding:26px; }
+  h1 { font-size:19px; margin:0 0 6px; }
+  p { color:var(--muted); font-size:13px; line-height:1.55; margin:0 0 16px; }
+  label { display:block; font-size:13px; margin:0 0 6px; }
+  input { width:100%; padding:10px 12px; border:1px solid var(--border); border-radius:8px; font-size:14px; background:transparent; color:var(--text); }
+  button { width:100%; margin-top:14px; padding:10px 12px; border:0; border-radius:8px; background:var(--pri); color:#fff; font-size:14px; cursor:pointer; }
+  .err { color:var(--err); font-size:13px; margin:12px 0 0; }
+</style>
+</head>
+<body>
+<main class="card">
+  <h1>PigeonBeam 信鸽直传</h1>
+  <p>本机直传面需要访问凭据。输入启动时打印的<b>一次性配对码</b>（60 秒内有效，用后即焚），或 <code>--token-file</code> 中的访问令牌。</p>
+  <form method="post" action="/pair">
+    <label for="token">配对码 / 访问令牌</label>
+    <input id="token" name="token" type="password" autocomplete="off" autofocus required />
+    <button type="submit">进入</button>
+  </form>
+  <!--ERR-->
+</main>
+<script>
+  // 兼容 fnOS #t= 片段（fragment 不发送到服务端/代理日志）：读出后 POST 换 Cookie。
+  (function () {
+    var t = new URLSearchParams(location.hash.slice(1)).get('t');
+    if (!t) return;
+    fetch('/pair', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({ token: t }) })
+      .then(function (r) { if (r.ok) { history.replaceState(null, '', location.pathname); location.reload(); } });
+  })();
+</script>
+</body>
+</html>
+`
 
 func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 	cfg := s.cfg.get()

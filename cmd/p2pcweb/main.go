@@ -17,6 +17,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -70,7 +71,7 @@ func main() {
 	fs.BoolVar(&o.noOpen, "no-open", false, "不自动打开浏览器")
 	fs.StringVar(&o.relay, "relay", "", "中继地址（缺省按注册中心 host 推导 :12347）")
 	fs.BoolVar(&o.noPunch, "no-punch", false, "跳过 UDP 打洞直接走中继")
-	fs.StringVar(&o.token, "token", "", "访问令牌（缺省随机生成；无头部署/测试固定值用）")
+	fs.StringVar(&o.token, "token", "", "访问令牌（缺省随机生成；会出现在 ps/命令历史中，生产请用 --token-file）")
 	fs.StringVar(&o.tokenFile, "token-file", "", "持久化令牌文件（有则读、无则生成写入 0600；NAS 等无头部署跨重启稳定）")
 	fs.StringVar(&o.configFile, "config-file", "", "配置文件显式路径（缺省走系统配置目录；NAS 服务用户家目录常不可写，落数据卷）")
 	fs.StringVar(&o.child, "transfer-child", "", "内部用:传输子模式(send|recv)，勿手动调用")
@@ -110,6 +111,14 @@ func runServer(o *options) error {
 		logf("⚠ 非回环监听 %s：随机令牌成为唯一门禁，注意暴露面", laddr)
 	}
 
+	// 一次性配对码（p2p#58）：启动输出/自动打开只带它，长期访问令牌
+	// 绝不进 URL。配对码 TTL 60s、用后即焚，只能换一次 HttpOnly 会话
+	// Cookie；日志里即使泄露也只在极短窗口内可用。
+	pairs, err := newPairStore(pairCodeTTL)
+	if err != nil {
+		return err
+	}
+
 	s := &Server{
 		token:     token,
 		loopback:  loopback,
@@ -121,16 +130,18 @@ func runServer(o *options) error {
 		cfg:       newCfgStoreAt(o.configFile), // 空路径=回退系统配置目录(与缺省行为一致)
 		mgr:       NewManager(),
 		shares:    newShareTable(),
+		pairs:     pairs,
+		sessions:  newSessionStore(),
 	}
 	if err := os.MkdirAll(s.outDir, 0o755); err != nil {
 		logf("⚠ 接收目录不可创建 %s: %v（传输时会再报错）", s.outDir, err)
 	}
 
-	url := fmt.Sprintf("http://%s/?t=%s", net.JoinHostPort(displayHost(host), port), token)
-	logf("PigeonBeam 信鸽直传·网页模式 %s\n  界面:     %s\n  接收目录: %s\n  退出:     Ctrl+C（或关闭终端）",
-		version.Version, url, s.outDir)
+	baseURL := accessURL(host, port)
+	logf("PigeonBeam 信鸽直传·网页模式 %s\n  界面:     %s\n  一次性配对码: %s（60 秒内有效，用后即焚）\n  接收目录: %s\n  退出:     Ctrl+C（或关闭终端）",
+		version.Version, baseURL, pairs.code, s.outDir)
 	if !o.noOpen {
-		async.GoSafeLabeled("p2pcweb-open-browser", func() { openBrowser(url) })
+		async.GoSafeLabeled("p2pcweb-open-browser", func() { openBrowser(pairAccessURL(baseURL, pairs.code)) })
 	}
 
 	httpSrv := &http.Server{Handler: s.routes(), ReadHeaderTimeout: 10 * time.Second}
@@ -186,6 +197,21 @@ func displayHost(host string) string {
 	return host
 }
 
+// accessURL 启动日志/手动访问用的界面地址：**不含任何凭据**。
+func accessURL(host, port string) string {
+	return fmt.Sprintf("http://%s/", net.JoinHostPort(displayHost(host), port))
+}
+
+// pairAccessURL 自动打开浏览器用的一次性配对地址：只有短票 code，没有
+// 长期访问令牌（p2p#58）。
+func pairAccessURL(baseURL, code string) string {
+	sep := "?"
+	if strings.Contains(baseURL, "?") {
+		sep = "&"
+	}
+	return baseURL + sep + "c=" + url.QueryEscape(code)
+}
+
 func openBrowser(rawURL string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -213,8 +239,10 @@ func usage() {
   p2pc-web [--addr 127.0.0.1:12348] [--out 目录] [--max-upload 字节] [--no-open]
 
 说明:
-  本机起回环 HTTP 服务，浏览器打开启动时打印的带令牌地址即界面:
+  本机起回环 HTTP 服务，浏览器打开启动时打印的地址（不含访问令牌）即界面:
   文件柜快捷入口 + 设备直传（内置 p2p 口令收发，文件不落服务器）。
+  首次进入用启动时打印的一次性配对码换取会话 Cookie；无头部署请用
+  --token-file 持久化令牌，并在页面里输入该令牌。
   需要可达的 p2pd 注册中心（默认 http://127.0.0.1:12346）。
   纯静态 Go 二进制——无 webkit2gtk-4.1 的老底座桌面（统信 UOS V20/
   麒麟 V10 SP1 等）同样可运行。

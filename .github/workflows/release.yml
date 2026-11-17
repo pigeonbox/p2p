@@ -4,9 +4,23 @@ name: Release
 # 注意:新镜像包默认 private,首个 release 后需在 GitHub Packages 页手动 flip public
 # (fnos 踩过的坑)。provenance=false:buildx 默认认证清单会使 GitHub Packages 页
 # 渲染 500(拉取不受影响,仅 Web UI 坏)。
+#
+# ── 已发 tag 的回挂自愈（p2p#59）────────────────────────────────────────
+# 曾出现 hub 上的 p2p-v* Release 被仓外动作删除、而本工作流只能由 tag push
+# 触发 ⇒ 已发 tag 无法重跑，发布列车卡在「hub Release 资产未就绪」。
+# 现在支持手动 dispatch 指定现有 tag（不会重切 tag）：
+#   gh workflow run release.yml -R pigeonbox/p2p -f version=v0.9.7
+# 该次运行会重建镜像 tag、重挂本仓 Release、重建/补齐 hub 回挂资产，
+# 并回调 hub 列车（train-advance），无需人工补 Release。
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '目标 tag（现有 tag 名，必须带 v 前缀，如 v0.9.7）。重跑发布+hub 回挂'
+        required: true
+        type: string
 
 concurrency:
   # 同 tag 的重跑可能与列车触发的运行并发:两边都 gh release create/upload 写
@@ -30,8 +44,25 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      # dispatch 的 github.ref 是分支；必须按输入的目标 tag 检出并打标签。
+      REL_TAG: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REL_TAG }}
+      - name: 解析目标版本（dispatch 输入校验）
+        id: ver
+        run: |
+          case "$REL_TAG" in
+            v*) ;;
+            *) echo "::error::version 必须是现有 tag（带 v 前缀），如 v0.9.7；收到: $REL_TAG"; exit 1 ;;
+          esac
+          V="${REL_TAG#v}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "major_minor=${V%.*}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "目标版本 $REL_TAG（commit $(git rev-parse --short HEAD)）"
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
@@ -47,6 +78,10 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
+            # dispatch 时 ref 是分支，semver 规则不生效 ⇒ 显式补同名 tag，
+            # 保证重跑产出与 tag 触发的镜像标签一致。
+            type=raw,value=${{ steps.ver.outputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ steps.ver.outputs.major_minor }},enable=${{ github.event_name == 'workflow_dispatch' }}
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
@@ -57,8 +92,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
           build-args: |
-            VERSION=${{ github.ref_name }}
-            COMMIT=${{ github.sha }}
+            VERSION=${{ env.REL_TAG }}
+            COMMIT=${{ steps.ver.outputs.commit }}
             BUILD_TIME=${{ steps.meta.outputs.date }}
             GOPROXY=https://proxy.golang.org,direct
 
@@ -72,14 +107,18 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: write
+    env:
+      REL_TAG: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REL_TAG }}
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
       - name: 交叉编译 p2pc / p2pc-web(纯静态 CGO=0)
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${REL_TAG#v}"
           COMMIT="$(git rev-parse --short HEAD)"
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           LDFLAGS="-w -s -X 'github.com/oekit/core/version.Version=${VERSION}' -X 'github.com/oekit/core/version.BuildCommit=${COMMIT}' -X 'github.com/oekit/core/version.BuildTime=${BUILD_TIME}'"
@@ -101,12 +140,13 @@ jobs:
       - name: 挂本仓 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ env.REL_TAG }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" out/p2pc-* --repo "$GITHUB_REPOSITORY" --clobber || {
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-              --title "p2p $GITHUB_REF_NAME" \
+          gh release upload "$TAG" out/p2pc-* --repo "$GITHUB_REPOSITORY" --clobber || {
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "p2p $TAG" \
               --notes "PigeonBeam(信鸽直传):设备直传客户端 p2pc / p2pc-web 网页模式 + 联邦注册中心 p2pd。镜像见 ghcr.io/pigeonbox/p2p;产品定位见 docs/PRODUCT.md" \
-              && gh release upload "$GITHUB_REF_NAME" out/p2pc-* --repo "$GITHUB_REPOSITORY";
+              && gh release upload "$TAG" out/p2pc-* --repo "$GITHUB_REPOSITORY";
           }
 
   # p2pc 二进制回挂生态主仓(产物统一出口)。跨仓写需 P2P_PAT——与 desktop/fnos 同一约定。
@@ -115,11 +155,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: p2pc-binaries
+    env:
+      REL_TAG: ${{ inputs.version || github.ref_name }}
     steps:
       - name: 回挂 p2pc 二进制到 hub
         env:
           GH_TOKEN: ${{ secrets.P2P_PAT }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.REL_TAG }}
         run: |
           sleep 10
           NOTES=$(printf '%s\n\n---\n🗂 **组件仓库**: [pigeonbox/p2p](https://github.com/pigeonbox/p2p) · **完整变更日志**: [%s](https://github.com/pigeonbox/p2p/releases/tag/%s)\n🌐 **生态总览 / Latest**: [pigeonbox/pigeonbox](https://github.com/pigeonbox/pigeonbox/releases/latest)\n' \
@@ -142,4 +184,24 @@ jobs:
           done
           # 组件回挂恒不为 Latest(Latest 属于 hub 生态快照 v*);release 已存在时也兜底纠偏
           gh release edit "p2p-$TAG" --repo pigeonbox/pigeonbox --latest=false || true
-          echo "已回挂到 pigeonbox/pigeonbox Releases"
+          # 回挂完整性校验（p2p#59）：hub 侧被外部删除/半删后重跑，必须补齐
+          # 与本仓 Release 同集的 p2pc-* 资产，而不是"命令返回 0 就算好"。
+          expected=$(ls /tmp/p2pc/p2pc-* | wc -l | tr -d ' ')
+          got=$(gh release view "p2p-$TAG" --repo pigeonbox/pigeonbox --json assets \
+            --jq '[.assets[] | select(.name | startswith("p2pc-"))] | length')
+          [ "$got" -eq "$expected" ] || { echo "::error::hub 回挂资产数 $got ≠ 本仓 $expected"; exit 1; }
+          echo "已回挂到 pigeonbox/pigeonbox Releases（$got 个 p2pc-* 资产）"
+
+      # 回挂就位后回调 hub 列车编排器（p2p#59）：挂载恢复即刻唤醒 advance
+      # 核对完成度；回调丢失由 hub 定期 sweep 兜底，不阻断发布本身。
+      - name: 回调 hub 列车编排器（train-advance）
+        env:
+          CB_TOKEN: ${{ secrets.P2P_PAT }}
+          TAG: ${{ env.REL_TAG }}
+        run: |
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer $CB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/pigeonbox/pigeonbox/dispatches \
+            -d "{\"event_type\":\"train-advance\",\"client_payload\":{\"component\":\"p2p\",\"tag\":\"$TAG\"}}" \
+            || echo "::warning::hub 回调失败(train-orchestrator sweep 兜底)"

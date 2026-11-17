@@ -22,6 +22,10 @@ jobs:
           cache-dependency-path: go.sum
       - name: Build
         run: go build ./...
+      # release.yml 回挂自愈门禁（p2p#59）：workflow_dispatch/版本取值/
+      # train-advance 回调/资产完整性校验被改掉即红。
+      - name: Release workflow 自愈校验
+        run: bash scripts/check-release-workflow.sh
       # gofmt 门禁（2026-10-22 补）：此前 core/server/p2p/contracts 四个 Go 仓的
       # CI 都没有 gofmt 步，.golangci.yml 也没开 gofmt linter —— 格式漂移无人拦
       # （core 仓 HEAD 上就压着 19 个漂移文件）。**发现即红，修法是 gofmt -w**，
