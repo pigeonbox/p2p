@@ -86,7 +86,7 @@ func TestPairCodeExchangeAndCookie(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("配对码兑换期望 303, got %d", resp.StatusCode)
 	}
@@ -106,7 +106,7 @@ func TestPairCodeExchangeAndCookie(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("配对码复用应 403, got %d", resp.StatusCode)
 	}
@@ -120,7 +120,7 @@ func TestPairCodeExchangeAndCookie(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "\"out_dir\"") {
 		t.Fatalf("Cookie 会话访问 API 失败: %d %s", resp.StatusCode, body)
 	}
@@ -150,12 +150,12 @@ func TestPairFormLogin(t *testing.T) {
 	}
 
 	resp := post("token=wrong")
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("错误令牌期望 401, got %d", resp.StatusCode)
 	}
 	resp = post("token=secret")
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther || len(resp.Cookies()) == 0 {
 		t.Fatalf("正确令牌期望 303 + Cookie, got %d", resp.StatusCode)
 	}
