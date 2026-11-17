@@ -142,6 +142,10 @@ make smoke                          # 冒烟:注册/公告/解析/信令/直传�
 | `PB_P2P_METRICS_STRICT` | `false` | true=未配置管理口令时 `/metrics` 直接 404（公共部署加固） |
 | `PB_P2P_LOG_LEVEL` | `info` | debug / info / warn / error |
 | `PB_P2P_CODE` | — | p2pc 客户端(v0.6.2 起):`p2pc recv -` 从 env 读取口令,argv 不留码,防同机 ps 可见 |
+| `PB_P2P_DIRECT_FAST_PUNCH_BUDGET` | `1.5s` | p2pc 直传:快打洞预算(直连尝试多久后回退中继) |
+| `PB_P2P_DIRECT_PUNCH_BUDGET` | `4s` | p2pc 直传:长打洞兜底预算(回退路径里「无中继可用」时的直连尝试时长) |
+| `PB_P2P_DIRECT_RELAY_PROBE_TIMEOUT` | `2s` | p2pc 直传:中继可达性探测超时(探测窗口多长算中继不可用) |
+| `PB_P2P_DIRECT_RELAY_FALLBACK_ENABLED` | `true` | p2pc 直传:是否允许回退中继(false=只长打洞兜底) |
 
 ## API（v1）
 
@@ -161,7 +165,7 @@ make smoke                          # 冒烟:注册/公告/解析/信令/直传�
 | `POST /v1/pair/approve` | 亮码方裁决 `{node_id, code, decision(accept/deny), claimer, ts, sig}`；deny 即烧码 |
 | `POST /v1/pair/requests` | 亮码方拉取活跃会话与待确认请求 `{sessions: [{code, expires_in, requests: [{node_id, name}]}]}` |
 | `WS /v1/channel/{hash}` | **信令信道**：同 hash 双方配对，转发不透明握手帧（见下节契约） |
-| `POST /v1/telemetry/session` | **会话建立遥测（p2p#51）**：客户端上报 `{node_id, kind, path, reason, ts, sig}` → p2pd 落 `p2p_session_established_total{path}`/`p2p_session_failed_total{reason}`/`p2p_relay_fallback_total{reason}`；kind/path/reason 为**枚举白名单**（集合外 400，脱敏：不收自由文本/地址），签名负载 `node_id|kind|path|reason|ts` |
+| `POST /v1/telemetry/session` | **会话建立遥测（p2p#51）**：客户端上报 `{node_id, kind, path, reason, net, dur_ms, ts, sig}` → p2pd 落 `p2p_session_established_total{path}`/`p2p_session_failed_total{reason}`/`p2p_relay_fallback_total{reason}`；**v2 追加** `p2p_session_established_by_net_total{path,net}`/`p2p_session_failed_by_net_total{reason,net}`/`p2p_relay_fallback_by_net_total{reason,net}`/`p2p_relay_fallback_duration_seconds`/`p2p_direct_upgrade_total{reason}`/`p2p_direct_upgrade_duration_seconds`；kind/path/reason 为**枚举白名单**（集合外 400，脱敏：不收自由文本/地址），`net∈{public,nat,unknown}` 集合外**折叠为 unknown**（不拒绝，label 基数恒三选一）；签名负载 `node_id\|kind\|path\|reason\|net\|dur_ms\|ts`（v2），旧客户端 v1 `node_id\|kind\|path\|reason\|ts` 仍收 |
 | `GET /health` · `GET /metrics` | 健康检查（显式 GET）/ Prometheus 指标 |
 | `GET/DELETE /v1/admin/*` | 统计/列表/强制下线（Bearer 管理口令） |
 
@@ -179,6 +183,8 @@ make smoke                          # 冒烟:注册/公告/解析/信令/直传�
 配对-敲门:   pair-claim | node_id | code | claim_id | ts
 配对-裁决:   pair-approve | node_id | code | decision | claimer | ts
 配对-轮询:   pair-requests | node_id | ts
+遥测上报:    node_id | kind | path | reason | net | dur_ms | ts   ← v2（2026-11-17，p2p#51）
+遥测上报:    node_id | kind | path | reason | ts                 ← v1（旧客户端，服务端兼容收）
 ```
 
 名录扩展段（`discoverable`/`public_url`/`box_pub` 任一出现时）必须使用扩展负载签名；请求携带扩展字段但签旧负载一律 401。未携带扩展字段的注册（旧客户端）**不触碰**既有名录状态（sticky：federation 心跳与 p2pc 直传注册共写同一 node_id，不会互踩名录可见性）。`discoverable=1` 必须携带合法 `box_pub`（32 字节 X25519 公钥 hex，自 Ed25519 节点私钥 seed 推导）。

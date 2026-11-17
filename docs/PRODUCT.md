@@ -67,3 +67,35 @@
 - 品牌名 **PigeonBeam**，中文 **信鸽直传**（2026-10-16 选定）。`PigeonDrop` 已否决——pigeon drop 是知名诈骗手法名称（警方公告通用术语），检索污染严重。
 - **二进制名与协议名不改**：`p2pc` / `p2pc-web` / `p2pd` / wire v4 维持原名，打包钉版（`P2PC_REF` / `.p2pc-version` / triple 资产名）与既有文档不破坏。
 - UI 呈现：p2pc-web 标题「PigeonBeam 信鸽直传」，副署 PigeonBox 生态；仓库名 `pigeonbox/p2p` 暂不改（Phase 3 后再评估）。
+
+## 直传维护模式的本次豁免范围（p2p#51）
+
+> 2026-11-18 拍板：把 p2p#51 的「可观测面最小豁免」（2026-11-15，commit 647e7f9 / PR #57）补成完整形态。
+> 豁免**仅限**两件事：① 直连成功率遥测的**分桶统计**；② 中继回退的**可配置/可观测**。
+> 本节是本次豁免的范围声明（既有拍板段落不改）。
+
+**豁免一 = 直连成功率按网络环境分桶**
+
+- 分桶维度 `net` ∈ {`public`, `nat`, `unknown`}：判定依据是**本机网卡上有没有公网地址**（`public` = 裸机/云主机；`nat` = 私网或 CGNAT，即处于 NAT 之后；`unknown` = 判定不了）。
+- **不按 NAT 行为类型（对称/端口受限/锥形）分桶**：那需要 RFC 5780 行为探测（同一 socket 换源端口再探、看映射端口是否变化），本仓没有这类探测 ⇒ 臆造「对称 NAT」标签只会得到错误结论。宁可少一维，不造假维度。
+- 脱敏与基数封顶：桶标签**只记枚举**（不含任何 IP/前缀/设备指纹/用户标识）；集合外取值一律折进 `unknown`，指标层再兜底折进 `other` ⇒ 灌入任意多不同维度都不增序列。
+
+**豁免二 = 中继回退可配置 + 可观测**
+
+- 可配置（触发条件与延迟，环境变量注入，**不新增 CLI 旗标**）：`PB_P2P_DIRECT_FAST_PUNCH_BUDGET`（快打洞预算 = 回退触发延迟，缺省 1.5s）、`PB_P2P_DIRECT_PUNCH_BUDGET`（长打洞兜底预算，缺省 4s）、`PB_P2P_DIRECT_RELAY_PROBE_TIMEOUT`（中继可达性探测窗口，缺省 2s）、`PB_P2P_DIRECT_RELAY_FALLBACK_ENABLED`（是否允许回退中继，缺省 true）。
+- 可观测（此前回退是黑盒）：是否回退、回退原因分类（`punch_failed` / `direct_failed`）、回退触发耗时（直连尝试开始→回退决策）、直连升级耗时与结果（`upgraded` / `upgrade_timeout` / `upgrade_failed`，中继就绪→升级就绪/超时）。
+- 指标：`p2p_session_established_by_net_total{path,net}`、`p2p_session_failed_by_net_total{reason,net}`、`p2p_relay_fallback_by_net_total{reason,net}`、`p2p_relay_fallback_duration_seconds{reason,net}`、`p2p_direct_upgrade_total{result,net}`、`p2p_direct_upgrade_duration_seconds{result,net}`（既有三个 `p2p_session_*`/`p2p_relay_fallback_total` 指标不动，避免打断既有看板）。
+
+**本次豁免**不包含（明文边界）
+
+- **不做 DHT**（p2p#51 原方向③，与本文件定位一致，仍然冻结）。
+- **不改 wire 协议字节布局**：`internal/wire/**` 是破坏性冻结区，本次零改动。
+- **不改 `p2pc` CLI 行为**：不加旗标、不改子命令；策略一律走环境变量注入。
+- **不新增第三方依赖**：复用仓内已有的 `internal/config`（viper 已在 go.mod）。
+- **不新增直传产品能力**：本次只加观测面与策略旋钮，不加用户可见功能。
+
+**默认行为不变（硬要求，已由单测钉住）**
+
+- 四项策略缺省值**逐字等于** 2026-11-15 前的硬编码值（1.5s / 4s / 2s / 允许回退）⇒ 不配置时回退决策链与今天完全一致。
+- 遥测契约**向后兼容**：签名负载升 v2（`node_id|kind|path|reason|net|dur_ms|ts`），服务端仍接受旧客户端的 v1 负载（仅当 `net` 与 `dur_ms` 都缺省时才回落）。
+- 已知代价（如实记录）：**新客户端 → 旧服务端**时遥测上报会被旧服务端拒签（负载格式变了），丢的只是这一维度遥测，传输本身不受影响；两端同版本即无此问题。

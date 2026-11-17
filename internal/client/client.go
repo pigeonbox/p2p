@@ -19,6 +19,7 @@ import (
 
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/concurrency/retry"
+	"github.com/pigeonbox/p2p/internal/config"
 	"github.com/pigeonbox/p2p/internal/registry"
 	"github.com/pigeonbox/p2p/internal/wire"
 )
@@ -39,6 +40,10 @@ type Options struct {
 	DisablePunch bool
 	// NoRelay 仅直连:跳过中继兜底,打洞失败即报错(强制直连/诊断用)
 	NoRelay bool
+	// Direct 直传策略(p2p#51:中继回退的触发条件与延迟)。
+	// nil=按环境变量读(config.LoadDirect;缺省逐字等于今日行为);
+	// 非 nil=调用方显式指定(仍过钳制:非法值回退缺省)。
+	Direct *config.Direct
 	// PunchBudget 打洞预算（默认 4s）
 	PunchBudget time.Duration
 	// Quiet 关闭过程日志
@@ -81,9 +86,9 @@ func New(opt Options) (*Client, error) {
 	if opt.NodeKeyPath == "" {
 		opt.NodeKeyPath = DefaultNodeKeyPath()
 	}
-	if opt.PunchBudget <= 0 {
-		opt.PunchBudget = 4 * time.Second
-	}
+	// 打洞预算:调用方显式给了就用调用方的(测试/诊断),否则用策略值
+	// (缺省 4s,与 2026-11-15 前的硬编码一致)。
+	punchExplicit := opt.PunchBudget > 0
 	for _, r := range strings.Split(opt.RegistriesJoined, ",") {
 		if r = strings.TrimSpace(r); r != "" {
 			opt.Registries = append(opt.Registries, r)
@@ -96,6 +101,27 @@ func New(opt Options) (*Client, error) {
 	log := slog.Default()
 	if opt.Quiet {
 		log = slog.New(discardHandler{})
+	}
+	// 直传策略(p2p#51):显式指定优先,否则读环境变量;取值非法则钳回缺省
+	// (缺省逐字等于今日行为⇒ 不配置时行为完全一致)。
+	var policyWarn []string
+	if opt.Direct == nil {
+		d, warns := config.LoadDirect()
+		opt.Direct = &d
+		policyWarn = warns
+	} else {
+		d, warns := config.NormalizeDirect(*opt.Direct)
+		opt.Direct = &d
+		policyWarn = warns
+	}
+	if !punchExplicit {
+		opt.PunchBudget = opt.Direct.PunchBudget
+	}
+	if opt.PunchBudget <= 0 {
+		opt.PunchBudget = 4 * time.Second
+	}
+	for _, w := range policyWarn {
+		log.Warn("直传策略取值非法,已回退缺省", "warn", w)
 	}
 	return &Client{opt: opt, id: id, log: log, reg: newRegistryAPI(opt.Registry)}, nil
 }
@@ -436,21 +462,24 @@ func (c *Client) listenFirst(socks []*net.UDPConn, session []byte, cert tls.Cert
 
 // regBase 为本次会话所用注册中心基址(遥测上报目标;空=不上报,p2p#51)。
 func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, session []byte, cert tls.Certificate, peer *candInfo, isSender bool, ch *channel, regBase string) (x *xport, via string, err error) {
-	// p2p#51 直连率遥测:结果分类在各分支显式赋值,return 后统一 best-effort
-	// 上报(异步+短超时,见 telemetry.go)。未分类的返回不上报——宁缺勿错标。
+	// p2p#51 直连率遥测：补齐网络环境分桶与回退耗时。
+	// 结果分类在各分支显式赋值,return 后统一 best-effort 上报(异步+短超时,
+	// 见 telemetry.go)。未分类的返回不上报——宁缺勿错标。
+	rep := newSessionReporter(regBase)
 	var telePath, teleReason string
 	defer func() {
 		switch {
 		case err != nil && teleReason != "":
-			c.reportSession(regBase, registry.TelemetryFailed, "", teleReason)
+			c.reportSession(rep, registry.TelemetryFailed, "", teleReason, 0)
 		case err == nil && telePath != "":
-			c.reportSession(regBase, registry.TelemetryEstablished, telePath, "")
+			c.reportSession(rep, registry.TelemetryEstablished, telePath, "", 0)
 		}
 	}()
 	k := wire.DeriveKey(session, "cand")
+	// 快打洞预算(=回退触发延迟,p2p#51 可配):缺省 1.5s,与旧硬编码一致。
 	fast := c.opt.PunchBudget
-	if fast > 1500*time.Millisecond {
-		fast = 1500 * time.Millisecond
+	if fb := c.opt.Direct.FastPunchBudget; fast > fb {
+		fast = fb
 	}
 	tgt, punchErr := punchDual(sock4, sock6, peer, k, fast, mapped, c.log)
 
@@ -481,18 +510,23 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 		c.log.Warn("快打洞成功但直连建立失败,落中继+后台升级", "err", derr)
 	}
 
-	// 中继可达性探测(2s):不可用则长打洞兜底(旧行为);仅直连模式(-no-relay)跳过探测
+	// 中继可达性探测(缺省 2s,p2p#51 可配):不可用则长打洞兜底(旧行为);
+	// 仅直连模式(-no-relay)或策略禁用中继回退时跳过探测。
+	noRelay := c.opt.NoRelay || !c.opt.Direct.RelayFallbackEnabled
 	relayOK := false
-	if !c.opt.NoRelay {
-		if conn, derr := net.DialTimeout("tcp", c.relayAddr(), 2*time.Second); derr == nil {
+	if !noRelay {
+		if conn, derr := net.DialTimeout("tcp", c.relayAddr(), c.opt.Direct.RelayProbeTimeout); derr == nil {
 			_ = conn.Close()
 			relayOK = true
 		}
 	}
 	if !relayOK {
 		fallReason := "中继不可用"
-		if c.opt.NoRelay {
+		switch {
+		case c.opt.NoRelay:
 			fallReason = "仅直连模式"
+		case !c.opt.Direct.RelayFallbackEnabled:
+			fallReason = "中继回退已禁用(策略)"
 		}
 		c.log.Info(fallReason+",长打洞兜底", "budget", c.opt.PunchBudget.String())
 		// 回退长打洞的套接字前提(p2p#33 根因②):快路径若试过 QUIC,失败路径已
@@ -532,12 +566,11 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 
 	// 中继先行(p2p#51):走到这里=回退决策已定,打点+一行结构化日志——
 	// 回退此前是黑盒,现在 metrics(p2p_relay_fallback_total)与日志双可查。
-	fbReason := "punch_failed"
-	if punchErr == nil {
-		fbReason = "direct_failed"
-	}
+	// p2p#51:同时带上**回退触发耗时**(直连尝试开始→回退决策)与网络分桶,
+	// 让「为什么回退」与「回退前等了多久」都可查。
+	fbReason := fallbackReason(punchErr == nil)
 	c.log.Info("会话回退中继", "reason", fbReason)
-	c.reportSession(regBase, registry.TelemetryRelayFallback, "", fbReason)
+	c.reportSession(rep, registry.TelemetryRelayFallback, "", fbReason, time.Since(rep.started))
 
 	x, rerr := establishRelay(session, c.relayAddr(), relayToken(session), isSender)
 	if rerr != nil {
@@ -548,12 +581,28 @@ func (c *Client) establish(sw *xswap, sock4, sock6 *net.UDPConn, mapped string, 
 	if c.opt.DisablePunch || ch == nil {
 		return x, "relay", nil
 	}
+	// 升级遥测起点=中继就绪时刻(p2p#51:升级耗时从中继就绪起算)。
+	up := &upgradeCtx{rep: rep, since: time.Now()}
 	if isSender {
-		c.startUpgradeSender(sw, x, sock4, sock6, mapped, session, cert, peer, ch, k, tgt)
+		c.startUpgradeSender(sw, x, sock4, sock6, mapped, session, cert, peer, ch, k, tgt, up)
 	} else {
-		c.startUpgradeReceiver(sw, x, sock4, sock6, session, cert, ch, k)
+		c.startUpgradeReceiver(sw, x, sock4, sock6, session, cert, ch, k, up)
 	}
 	return x, "relay(后台升级中)", nil
+}
+
+// fallbackReason 回退原因分类(p2p#51)。
+//
+// directFailed=true = 快打洞成功但直连(QUIC)建立失败 ⇒ direct_failed;
+// 否则=打洞本身没通 ⇒ punch_failed。
+//
+// 负对照:把两个分支写反 ⇒ 回退原因分布整体对调,而指标本身照样绿
+// (只断言「有上报」不会发现)⇒ 必须逐值断言。
+func fallbackReason(directFailed bool) string {
+	if directFailed {
+		return "direct_failed"
+	}
+	return "punch_failed"
 }
 
 func famOf(sock *net.UDPConn) string {
@@ -574,7 +623,7 @@ func sockOf(sock4, sock6 *net.UDPConn, family string) *net.UDPConn {
 // startUpgradeSender 升级编排(发送侧):监听窗口 25s + offer(带新候选);
 // answer 到达即 arm,发送主流程在下一文件边界写 MsgSwap 换源。
 // fastTgt 非空(快打洞成功但接收方未至)时直接复用,否则补打 30s 长洞。
-func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.UDPConn, mapped string, session []byte, cert tls.Certificate, peer *candInfo, ch *channel, k [32]byte, fastTgt *punchTarget) {
+func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.UDPConn, mapped string, session []byte, cert tls.Certificate, peer *candInfo, ch *channel, k [32]byte, fastTgt *punchTarget, up *upgradeCtx) {
 	// 后台升级编排为即发即弃:panic 面=QUIC/TLS 握手(第三方库)与打洞栈,
 	// 收编后走既有"留在中继"降级路径,不拖垮传输进程。
 	async.GoSafe(func() {
@@ -583,6 +632,7 @@ func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.
 			t, err := punchDual(sock4, sock6, peer, k, 30*time.Second, mapped, c.log)
 			if err != nil {
 				c.log.Info("后台打洞未通(全程中继)", "reason", err.Error())
+				c.reportUpgrade(up, registry.UpgradeFailed)
 				return
 			}
 			tgt = t
@@ -592,6 +642,7 @@ func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.
 		ownNew.CertFP = peer.CertFP // 复用会话证书(指纹不变)
 		boxed, serr := ownNew.seal(k)
 		if serr != nil {
+			c.reportUpgrade(up, registry.UpgradeFailed)
 			return
 		}
 		// 先监听(接收方拨入),offer 随后——顺序不能反(真机踩坑:先 offer
@@ -605,6 +656,7 @@ func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.
 		})
 		offer, _ := json.Marshal(map[string]any{"u": "offer", "fam": fam, "cand": boxed})
 		if err := ch.send(offer); err != nil {
+			c.reportUpgrade(up, registry.UpgradeFailed)
 			return
 		}
 		select {
@@ -612,19 +664,22 @@ func (c *Client) startUpgradeSender(sw *xswap, relayX *xport, sock4, sock6 *net.
 			sw.store(dx)
 			sw.arm()
 			c.log.Info("直连升级就绪(文件边界换源)", "family", fam)
+			c.reportUpgrade(up, registry.UpgradeUpgraded)
 		case <-time.After(30 * time.Second):
 			c.log.Info("升级应答超时(全程中继)", "family", fam)
+			c.reportUpgrade(up, registry.UpgradeTimeout)
 		}
 	})
 }
 
 // startUpgradeReceiver 升级编排(接收侧):等 offer(同时自身快/长打洞在
 // establish 已处理),按 offer 族拨发送方新候选,成功回 ready。
-func (c *Client) startUpgradeReceiver(sw *xswap, relayX *xport, sock4, sock6 *net.UDPConn, session []byte, cert tls.Certificate, ch *channel, k [32]byte) {
+func (c *Client) startUpgradeReceiver(sw *xswap, relayX *xport, sock4, sock6 *net.UDPConn, session []byte, cert tls.Certificate, ch *channel, k [32]byte, up *upgradeCtx) {
 	// 同发送侧:即发即弃的升级编排,panic 收编后留在中继,不影响传输主流程。
 	async.GoSafe(func() {
 		raw, err := ch.recv()
 		if err != nil {
+			c.reportUpgrade(up, registry.UpgradeFailed)
 			return
 		}
 		var offer struct {
@@ -633,19 +688,23 @@ func (c *Client) startUpgradeReceiver(sw *xswap, relayX *xport, sock4, sock6 *ne
 			Cand json.RawMessage `json:"cand"`
 		}
 		if err := json.Unmarshal(raw, &offer); err != nil || offer.U != "offer" {
+			c.reportUpgrade(up, registry.UpgradeFailed)
 			return
 		}
 		sock := sockOf(sock4, sock6, offer.Fam)
 		plain, oerr := open(k, offer.Cand)
 		if sock == nil || oerr != nil {
+			c.reportUpgrade(up, registry.UpgradeFailed)
 			return
 		}
 		var peerNew candInfo
 		if err := json.Unmarshal(plain, &peerNew); err != nil {
+			c.reportUpgrade(up, registry.UpgradeFailed)
 			return
 		}
 		remote := peerNew.pickUDP(offer.Fam)
 		if remote == nil {
+			c.reportUpgrade(up, registry.UpgradeFailed)
 			return
 		}
 		// 预算与监听侧**同值**(upgradeOpBudget):监听侧等补拨、拨号侧等监听,
@@ -653,12 +712,14 @@ func (c *Client) startUpgradeReceiver(sw *xswap, relayX *xport, sock4, sock6 *ne
 		dx, derr := establishQUICBudget(context.Background(), sock, session, cert, peerNew.CertFP, remote, false, upgradeOpBudget, c.log)
 		if derr != nil {
 			c.log.Info("升级拨号失败(留中继)", "err", derr)
+			c.reportUpgrade(up, registry.UpgradeFailed)
 			return
 		}
 		sw.store(dx)
 		ready, _ := json.Marshal(map[string]any{"u": "ready"})
 		_ = ch.send(ready)
 		c.log.Info("直连升级拨号完成(等待发送方边界换源)", "family", offer.Fam)
+		c.reportUpgrade(up, registry.UpgradeUpgraded)
 	})
 }
 
