@@ -4,3 +4,11 @@ data/
 coverage.out
 /p2pc
 /p2pcweb
+
+# ── shellkit 上游镜像：副本必须**逐字完整**入库 ─────────────────────
+# 上游 vendor/shellkit/templates/bin/__NAME__ 是模板占位文件，且位于一个名为
+# bin/ 的目录里 ⇒ 本仓原有的 `bin/` 忽略规则（无前导斜杠 ⇒ 匹配任意层级同名
+# 目录）会把它**静默吞掉** ⇒ 入库的副本不完整 ⇒ hub 侧漂移门禁
+# （scripts/check-shellkit-vendor.sh）判红。
+# ⇒ 显式把该目录从忽略里摘出来。副本完整性由漂移门禁保证（生成物勿手改）。
+!third_party/shellkit/templates/bin/
